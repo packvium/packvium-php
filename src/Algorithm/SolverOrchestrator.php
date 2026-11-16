@@ -17,6 +17,8 @@ final class SolverOrchestrator
      * (`...:late_<type>:beam`), as Python's `LATE_TYPE_REFINEMENT_WIDTH`.
      */
     private const LATE_TYPE_REFINEMENT_WIDTH=4;
+    /** @var array{config:PackingConfig,packed:list<PackedContainer>,states:array<int,ContainerState>,verdicts:array<string,bool>}|null */
+    private ?array $supportDiagnostic=null;
     public function __construct(private array $customConstraints=[],private array $customOrders=[],private array $customSolvers=[],private ?CandidateScorer $candidateScorer=null,private ?ContainerSelector $containerSelector=null){}
 
     /** @return list<RawSolution> */
@@ -219,12 +221,13 @@ final class SolverOrchestrator
     }
 
     /**
-     * Whether one box of these dimensions fits this container empty: the frame, and for a flat
-     * bag the girth rule too, so a bag too thin for an item proves it unplaceable.
+     * Whether one box of these dimensions fits this container empty: the frame, and for a bag
+     * the girth rule too, so a bag too thin for an item proves it unplaceable.
      */
     private static function fitsAlone(Container $container,Dimensions $dimensions):bool
     {
-        return $container->isFlatBag()?FlatBag::fitsAlone($container->innerDimensions,$dimensions,$container->sideGussetTicks()):$dimensions->fitsInside($container->innerDimensions);
+        $girth=$container->girth();
+        return $girth!==null?FlatBag::fitsAlone($container->innerDimensions,$dimensions,$girth):$dimensions->fitsInside($container->innerDimensions);
     }
 
     /** @param list<Container> $containers */
@@ -351,6 +354,18 @@ final class SolverOrchestrator
      */
     private function supportIsTheBlocker(ItemInstance $item,array $packed,PackingConfig $config):bool
     {
+        // The answer is a function of the item's declared attributes and the final layout,
+        // so every instance of a type shares one verdict -- unless a caller's own constraint
+        // or scorer may read the instance itself, in which case each instance is asked.
+        // The packed-container states are likewise built once per layout, not once per item.
+        if($this->supportDiagnostic===null||$this->supportDiagnostic['config']!==$config||$this->supportDiagnostic['packed']!==$packed)
+            $this->supportDiagnostic=['config'=>$config,'packed'=>$packed,'states'=>[],'verdicts'=>[]];
+        $key=$this->customConstraints===[]&&$this->candidateScorer===null?$item->item->id:$item->id();
+        return $this->supportDiagnostic['verdicts'][$key]??=$this->observeSupportBlocker($item,$config);
+    }
+
+    private function observeSupportBlocker(ItemInstance $item,PackingConfig $config):bool
+    {
         $constraints=ConstraintSet::defaults($config->minimumSupportRatio,$this->customConstraints,$config->accessDirections);
         $hasSupport=false;
         foreach($constraints as $constraint)
@@ -358,18 +373,29 @@ final class SolverOrchestrator
         if(!$hasSupport)return false;
         $withoutSupport=array_values(array_filter($constraints,static fn($c)=>!($c instanceof SupportConstraint)));
         $scorer=$this->candidateScorer??new DefaultCandidateScorer();
-        // A small, fixed local budget -- independent of the caller's own deadline,
-        // which may already be exhausted -- so this diagnostic can never itself hang
-        // the solve; it is a best-effort explanation, not a required step.
-        $budget=Deadline::ofMilliseconds(2_000);
-        foreach($packed as $packedContainer){
-            if($budget->expired())return false;
-            $state=new ContainerState($packedContainer->container,$packedContainer->sequence);
-            foreach($packedContainer->placements as $placement)$state->add($placement);
-            if(CandidateFinder::find($state,$item,$config,$withoutSupport,new SearchStats(),$budget,$scorer,1)===[])continue;
-            if(CandidateFinder::find($state,$item,$config,$constraints,new SearchStats(),$budget,$scorer,1)===[])return true;
+        // No wall clock: the reason an item is reported unpacked must be a function of the
+        // request and the layout, never of machine load. A frozen clock leaves nothing to
+        // expire; the search is bounded by the layout's own candidate points (max one
+        // candidate wanted), and `supportIsTheBlocker` memoises one verdict per item type.
+        $budget=new Deadline(PHP_INT_MAX,static fn():int=>0);
+        try{
+            foreach($this->supportDiagnostic['packed'] as $index=>$packedContainer){
+                $state=$this->supportDiagnostic['states'][$index]??=self::replayedState($packedContainer);
+                if(CandidateFinder::find($state,$item,$config,$withoutSupport,new SearchStats(),$budget,$scorer,1)===[])continue;
+                if(CandidateFinder::find($state,$item,$config,$constraints,new SearchStats(),$budget,$scorer,1)===[])return true;
+            }
+        }catch(TimeLimitReached){
+            // Only a caller's own scorer or constraint can raise it now; no verdict, as before.
+            return false;
         }
         return false;
+    }
+
+    private static function replayedState(PackedContainer $packedContainer):ContainerState
+    {
+        $state=new ContainerState($packedContainer->container,$packedContainer->sequence);
+        foreach($packedContainer->placements as $placement)$state->add($placement);
+        return $state;
     }
 
     /**
@@ -587,7 +613,7 @@ final class SolverOrchestrator
             $billed=max($gross,$dimensional);
             $placed=$one->state->placementCount();
             if($config->objective==='shipping_cost'){
-                $candidateScore=[-$placed,$billed,$container->id];
+                $candidateScore=[-$placed,$billed,StableSorter::textKey($container->id)];
             }else{
                 // Landed cost ranks the round by the money the finished score will
                 // charge, not by the grams it is derived from. This loop commits the
@@ -602,7 +628,7 @@ final class SolverOrchestrator
                     $charge??LandedCostSolutionScorer::UNPRICEABLE_MINOR,
                     intdiv(count($roundItems)+max($placed,1)-1,max($placed,1)),
                     -$placed,
-                    $container->id,
+                    StableSorter::textKey($container->id),
                 ];
             }
         }elseif($config->objective==='maximum_volume'&&$selector instanceof DefaultContainerSelector){
@@ -610,7 +636,7 @@ final class SolverOrchestrator
             // that seated the most pieces. A caller's own selector is left alone.
             $used=$one->state->usedVolume;
             $leftover=BigInt::chunks(BigInt::subtract($container->innerDimensions->volumeString(),$used));
-            $candidateScore=[...array_map(static fn(int $c):int=>-$c,BigInt::chunks($used)),$container->costMinor,...$leftover,$container->id];
+            $candidateScore=[...array_map(static fn(int $c):int=>-$c,BigInt::chunks($used)),$container->costMinor,...$leftover,StableSorter::textKey($container->id)];
         }else{
             $candidateScore=$selector->score($container,$one);
         }
@@ -659,7 +685,7 @@ final class SolverOrchestrator
         $remaining=$opened['remaining'];$packed=$opened['packed'];$exhaustive=$opened['exhaustive'];$dominantLattice=$opened['dominant'];
         $inventory=$opened['inventory'];$seq=$opened['sequences'];
         $maximum=$config->maxContainers??array_sum(array_map(static fn($c)=>$c->quantity??count($items),$containers));
-        $ordered=StableSorter::sortBy($containers,static fn(Container $c):array=>[$c->costMinor,...$c->innerDimensions->volumeKey(),$c->id]);
+        $ordered=StableSorter::sortBy($containers,static fn(Container $c):array=>[$c->costMinor,...$c->innerDimensions->volumeKey(),StableSorter::textKey($c->id)]);
         $selector=$this->containerSelector??new DefaultContainerSelector();
         while($remaining!==[]&&count($packed)<$maximum&&!$reached){
             if($deadline->expired()){$reached=true;break;}

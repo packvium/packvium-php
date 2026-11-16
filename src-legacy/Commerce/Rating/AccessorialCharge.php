@@ -41,8 +41,12 @@ final class AccessorialCharge
         if ($permilleOfBase !== null && $permilleOfBase < 0) { throw new \InvalidArgumentException('permille_of_base cannot be negative'); }
     }
 
-    public function chargeMinor(int $baseChargeMinor): int
+    /**
+     * @param int|string $baseChargeMinor
+     * @return int|string
+     */
+    public function chargeMinor($baseChargeMinor)
     {
-        return $this->flatChargeMinor ?? Arithmetic::mulDivCeil($baseChargeMinor, (int)$this->permilleOfBase, 1000);
+        return $this->flatChargeMinor ?? Arithmetic::mulDivCeilExact($baseChargeMinor, (int)$this->permilleOfBase, 1000);
     }
 }

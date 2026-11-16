@@ -73,6 +73,8 @@ final readonly class Item
      */
     private static function admitShape(ShapeType $shapeType,?array $hullVertices,?int $ratioPpm,?int $limitKpa,Dimensions $dimensions,?Length $nestingHeight):?array
     {
+        // First, so an oversized hull is refused before any per-vertex work runs.
+        if($hullVertices!==null)HullShape::admitVertexCount(count($hullVertices));
         $foreign=match($shapeType){
             ShapeType::CONVEX_HULL=>['compression_ratio'=>$ratioPpm,'max_compression_pressure_kpa'=>$limitKpa],
             ShapeType::COMPRESSIBLE=>['hull_vertices'=>$hullVertices],

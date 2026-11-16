@@ -4,6 +4,40 @@ What changed in `packvium/packvium` on Packagist, release by release. The format
 [Keep a Changelog](https://keepachangelog.com/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0]
+
+Bottom gussets and standing pouches, a certified bound for the shipping objectives, one money
+ceiling, and ids that sort as text.
+
+### Added
+
+- **`bottom_gusset_depth` and `orientation: "standing"`** on a `gusseted_bag`: `Container`
+  gains `$bottomGussetDepth`, `$bagOrientation` and `$uprightFrame`, and the new `Domain\Girth`
+  holds both loops.
+- **`optimality.lower_bound` and the gap under `shipping_cost` and `lowest_landed_cost`**
+  (`ObjectiveBounds`, `BoundWithheldException`); the validator checks them.
+- **`HullShape::MAXIMUM_VERTICES = 32`**: a longer `hull_vertices` list is `above_maximum`.
+- **`examples/checkout.php` and `examples/fulfilment.php`.**
+
+### Changed
+
+- **A `rate_table` priced above 9007199254740991 minor units** at its top bracket is refused at
+  admission. A commerce quote refuses an amount above it, where it used to answer up to
+  `PHP_INT_MAX` and throw a `TypeError` past it. `AccessorialCharge::chargeMinor()` takes and
+  returns `int|string`.
+- **Ids sort as text, not numbers:** containers named `"9"` and `"10"` open `"10"` first, as in
+  every other engine. Group names in validation reports, fixed-placement issues, policy
+  citations and grid lattice tags follow code-point order too.
+- **The "why unpacked" reason no longer depends on a 2 s clock,** and is decided once per item
+  type: 900 items take 0.1–0.2 s instead of 1.6 s.
+
+### Fixed
+
+- **`WeightRebalancer` fataled on a compact lattice result.**
+- **The support diagnosis could throw `TimeLimitReached` out of `Packer::pack`.**
+- **`bin/packvium` read `tag_limits: {"0": 1}` as a list.**
+- **`effort_budget` limits written as `1000.0`** threw a `TypeError`; they now read as integers.
+
 ## [1.10.0]
 
 Overhanging pallets, gusseted bags, 24 rotations for a hull, a declared currency, an id on every

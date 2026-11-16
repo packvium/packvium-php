@@ -99,9 +99,9 @@ final class RareRequestRules
     }
 
     /**
-     * The bag's own shape top to bottom -- kind, unknown keys, a gusseted bag's side
-     * gusset (1.10) -- then every container field a bag refuses, in the order of
-     * `BAG_EXCLUSIONS`. O(1).
+     * The bag's own shape top to bottom -- kind, unknown keys, a gusseted bag's
+     * gussets and orientation (1.10) -- then every container field a bag refuses, in
+     * the order of `BAG_EXCLUSIONS`. O(1).
      *
      * @param stdClass|array<array-key,mixed> $container
      * @param mixed $raw
@@ -115,9 +115,9 @@ final class RareRequestRules
             throw $call('refuse', 'not_allowed', "{$field}/kind", 'must be one of ' . CanonicalJson::spelling(FlatBag::KINDS));
         }
         $gusseted = $kind === FlatBag::GUSSETED_BAG;
-        $call('knownFields', $boundary, $field, $gusseted ? ['kind', 'side_gusset_depth'] : ['kind']);
+        $call('knownFields', $boundary, $field, $gusseted ? FlatBag::GUSSETED_BAG_FIELDS : ['kind']);
         if ($gusseted) {
-            self::sideGussetDepth($call, $container, $call('required', $boundary, 'side_gusset_depth', $field), "{$field}/side_gusset_depth", $unit);
+            self::gussetedBag($call, $container, $boundary, $field, $unit);
         }
         foreach (RequestRules::BAG_EXCLUSIONS as $name) {
             if ($call('setBesideABag', $name, JsonValue::get($container, $name))) {
@@ -127,20 +127,51 @@ final class RareRequestRules
     }
 
     /**
-     * A length, positive once read in ticks, and no deeper than the bag's inner width.
+     * The side gusset, then the bottom one, each a positive length within its fold; with
+     * neither, the side gusset is reported missing as in 1.10. Then the orientation, and a
+     * standing bag's bottom gusset. O(1).
      *
      * @param stdClass|array<array-key,mixed> $container
+     * @param stdClass|array<array-key,mixed> $boundary
+     */
+    private static function gussetedBag(\Closure $call, $container, $boundary, string $field, string $unit): void
+    {
+        $side = JsonValue::get($boundary, 'side_gusset_depth');
+        $bottom = JsonValue::get($boundary, 'bottom_gusset_depth');
+        if ($side === null && $bottom === null) {
+            $call('required', $boundary, 'side_gusset_depth', $field);
+        }
+        $inner = $call('sideTicks', JsonValue::get($container, 'inner_dimensions'), $unit);
+        if ($side !== null) {
+            self::gussetDepth($call, $side, "{$field}/side_gusset_depth", $inner[1], 'exceeds inner_dimensions width', $unit);
+        }
+        if ($bottom !== null) {
+            self::gussetDepth($call, $bottom, "{$field}/bottom_gusset_depth", 2 * $inner[0], 'exceeds twice inner_dimensions length', $unit);
+        }
+        $orientation = JsonValue::get($boundary, 'orientation');
+        if ($orientation === null) {
+            return;
+        }
+        $call('oneOf', $orientation, "{$field}/orientation", FlatBag::ORIENTATIONS);
+        if ($orientation === FlatBag::STANDING && $bottom === null) {
+            throw $call('refuse', 'missing_field', "{$field}/bottom_gusset_depth", 'is required when orientation is standing');
+        }
+    }
+
+    /**
+     * A length, positive once read in ticks, and no deeper than its fold allows.
+     *
      * @param mixed $value
      */
-    private static function sideGussetDepth(\Closure $call, $container, $value, string $field, string $unit): void
+    private static function gussetDepth(\Closure $call, $value, string $field, int $deepest, string $tooDeep, string $unit): void
     {
         $call('measure', $value, $field, Length::class, $unit);
         $depth = MeasureReading::ticks($value, Length::class, $unit);
         if ($depth === 0) {
             throw $call('refuse', 'invalid_value', $field, 'must be positive');
         }
-        if ($depth > $call('sideTicks', JsonValue::get($container, 'inner_dimensions'), $unit)[1]) {
-            throw $call('refuse', 'invalid_value', $field, 'exceeds inner_dimensions width');
+        if ($depth > $deepest) {
+            throw $call('refuse', 'invalid_value', $field, $tooDeep);
         }
     }
 
@@ -167,6 +198,13 @@ final class RareRequestRules
         if ($code !== null) {
             RequestRules::rateTableCurrency($code, "{$where}/currency", $currency);
         }
+        $prices = JsonValue::get($table, 'prices_minor');
+        RequestRules::rateTableCeiling(
+            $prices === null ? [] : \array_map([JsonValue::class, 'integer'], \array_values((array) $prices)),
+            JsonValue::integer(JsonValue::get($table, 'minimum_charge_minor') ?? 0),
+            JsonValue::integer(JsonValue::get($table, 'fuel_surcharge_permille') ?? 0),
+            $where
+        );
     }
 
     /** @param mixed $raw @param array{0:int,1:int,2:int} $inner */

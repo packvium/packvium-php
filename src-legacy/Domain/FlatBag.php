@@ -17,24 +17,61 @@ use Packvium\Unit\Length;
  *
  * A `gusseted_bag` (1.10) has side gussets of depth G folded into each long edge: the tube
  * round the package's y-z section is 2(W + G) long instead of 2W, so the width sum becomes
- * b + c <= W + G. The length sum is unchanged (no bottom gusset in 1.10), and G = 0 is the
- * flat bag. Every method here takes the gusset depth in ticks, 0 for a flat bag.
+ * b + c <= W + G, and G = 0 is the flat bag. Every method here takes the gusset depths in
+ * ticks, 0 where none is declared.
+ *
+ * A bottom gusset (1.11) is one panel of depth K folded into the closed end: the loop
+ * along the bag runs front, bottom, back, 2L + K, so the length sum becomes 2(a + c) <= 2L + K,
+ * doubled to stay in integers. A gusseted bag with a bottom gusset may stand on it
+ * (`orientation: standing`): the solving frame is then W x H x L, the floor is the opened
+ * bottom, and the same two loops go round other axes -- a + b <= W + G across, 2(b + c) <= 2L + K
+ * along. `Girth` holds the two loops for either frame.
  */
 final class FlatBag
 {
     public const GUSSETED_BAG='gusseted_bag';
     public const KINDS=['flat_bag',self::GUSSETED_BAG];
+    public const FLAT='flat';
+    public const STANDING='standing';
+    public const ORIENTATIONS=[self::FLAT,self::STANDING];
+    /** The keys a gusseted bag's boundary may carry (1.10 side gusset; 1.11 bottom gusset and orientation). */
+    public const GUSSETED_BAG_FIELDS=['bottom_gusset_depth','kind','orientation','side_gusset_depth'];
 
-    /** Whether a package of extents (a, b, c) passes both girth sums; the frame is the caller's. */
-    public static function girthAdmits(Dimensions $inner,int $a,int $b,int $c,int $gusset=0):bool
+    /**
+     * Whether a package of extents (a, b, c) passes both girth sums of a bag lying flat in
+     * `$inner`; the frame is the caller's.
+     */
+    public static function girthAdmits(Dimensions $inner,int $a,int $b,int $c,int $gusset=0,int $bottomGusset=0):bool
     {
-        return $a+$c<=$inner->length->ticks&&$b+$c<=$inner->width->ticks+$gusset;
+        return self::girthFor($inner->length->ticks,$inner->width->ticks,$gusset,$bottomGusset,false)->admits([$a,$b,$c]);
     }
 
-    /** Whether one box of these dimensions, alone at the origin, fits a bag. */
-    public static function fitsAlone(Dimensions $inner,Dimensions $box,int $gusset=0):bool
+    /**
+     * The loops of a bag declared `$length x $width` with the two gusset depths, 0 where none is
+     * declared, in its flat or standing frame. O(1).
+     */
+    public static function girthFor(int $length,int $width,int $sideGusset,int $bottomGusset,bool $standing):Girth
     {
-        return $box->fitsInside($inner)&&self::girthAdmits($inner,$box->length->ticks,$box->width->ticks,$box->height->ticks,$gusset);
+        if($standing)return new Girth([1,2],2*$length+$bottomGusset,[0,1],$width+$sideGusset);
+        return new Girth([0,2],2*$length+$bottomGusset,[1,2],$width+$sideGusset);
+    }
+
+    /** The W x H x L frame a bag declared L x W x H stands in. */
+    public static function standingDimensions(Dimensions $declared):Dimensions
+    {
+        return new Dimensions($declared->width,$declared->height,$declared->length);
+    }
+
+    /**
+     * Whether one box of these dimensions, alone at the origin of the frame `$inner`, fits a bag:
+     * against its `Girth`, or lying flat with a side gusset of `$gusset` ticks. The parameter keeps
+     * its 1.10 name, which a named argument may spell.
+     * @param int|\Packvium\Domain\Girth $gusset
+     */
+    public static function fitsAlone(Dimensions $inner,Dimensions $box,$gusset=0):bool
+    {
+        $girth=$gusset instanceof Girth?$gusset:self::girthFor($inner->length->ticks,$inner->width->ticks,$gusset,0,false);
+        return $box->fitsInside($inner)&&$girth->admits([$box->length->ticks,$box->width->ticks,$box->height->ticks]);
     }
 
     /**

@@ -17,7 +17,7 @@ if ($case === 'machine') {
     $container = new Packvium\Domain\Container('m', Packvium\Domain\Dimensions::mm(100, 100, 100),
         madeToMeasure: new Packvium\Domain\MadeToMeasure([800000, 800000, 800000], [400000, 400000, 400000]));
 }
-$config = $case === 'unsupported'
+$config = $case === 'billed'
     ? new Packvium\Config\PackingConfig(objective: 'shipping_cost', dimensionalWeightDivisor: 5000)
     : new Packvium\Config\PackingConfig(objective: 'default');
 $scorer = $case === 'custom' ? new Packvium\Objective\DefaultSolutionScorer() : null;
@@ -38,9 +38,10 @@ PHP;
         return json_decode($out, true, flags: JSON_THROW_ON_ERROR);
     }
 
-    public static function testAnUnsupportedObjectiveDoesNotLoadTheBound(): void
+    /** Every built-in objective is covered since, so a billed one loads its bound. */
+    public static function testABilledObjectiveLoadsAndStatesItsBound(): void
     {
-        self::assertSame(['loaded' => false, 'bound' => null], self::probe('unsupported'));
+        self::assertSame(['loaded' => true, 'bound' => [0]], self::probe('billed'));
     }
 
     public static function testAMachineDoesNotLoadTheBound(): void

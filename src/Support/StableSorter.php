@@ -3,6 +3,17 @@ declare(strict_types=1);
 namespace Packvium\Support;
 final class StableSorter
 {
+    /**
+     * A user-supplied id as a sort-key element that compares by bytes. PHP's `<=>` reads two
+     * numeric-looking strings as numbers ("9" < "10", "1e1" == "10"); the other engines order
+     * ids by code point. The shared non-numeric prefix forces string comparison and leaves
+     * the order of the ids themselves untouched.
+     */
+    public static function textKey(string $id): string
+    {
+        return 'id:'.$id;
+    }
+
     /** @template T @param list<T> $values @param callable(T,T):int $compare @return list<T> */
     public static function sort(array $values, callable $compare): array
     {

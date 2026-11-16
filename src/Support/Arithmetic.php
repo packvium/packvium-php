@@ -41,6 +41,38 @@ final class Arithmetic
         $product = BigInt::multiply((string)$a, (string)$b);
         $quotient = BigInt::divide($product, (string)$d);
         $exact = BigInt::compare(BigInt::multiply($quotient, (string)$d), $product) === 0;
-        return (int)$quotient + ($exact ? 0 : 1);
+        $ceiling = $exact ? $quotient : BigInt::add($quotient, '1');
+        if (BigInt::compare($ceiling, (string)PHP_INT_MAX) > 0) {
+            throw self::beyondInteger();
+        }
+        return (int)$ceiling;
+    }
+
+    /**
+     * Exact ceil(a * b / d) for non-negative inputs at any size: an int while it fits one,
+     * a decimal string beyond. For callers that must compare the result to a ceiling of
+     * their own rather than refuse at the 64-bit one.
+     */
+    public static function mulDivCeilExact(int|string $a, int|string $b, int $d): int|string
+    {
+        if ($d <= 0) { throw new \InvalidArgumentException('Divisor must be positive'); }
+        return ExactInteger::floorDiv(ExactInteger::add(ExactInteger::mul($a, $b), $d - 1), $d);
+    }
+
+    /**
+     * a + b for non-negative minor-unit amounts, refusing a sum a 64-bit int cannot hold
+     * where plain `+` would silently become a float.
+     */
+    public static function addNonNegative(int $a, int $b): int
+    {
+        if ($a > PHP_INT_MAX - $b) {
+            throw self::beyondInteger();
+        }
+        return $a + $b;
+    }
+
+    private static function beyondInteger(): ObjectRefusal
+    {
+        return new ObjectRefusal('above_maximum', 'amount must be at most ' . PHP_INT_MAX . ' minor units');
     }
 }

@@ -225,6 +225,20 @@ final class FixedPlacementTest extends TestCase
         ], array_values(array_filter($details, static fn(string $d): bool => str_contains($d, 'fixed'))));
     }
 
+    public static function testMovedFixedItemsWithNumericLookingIdsAreReportedInCodePointOrder(): void
+    {
+        // `<=>` would order "9" before "10" as numbers; Python orders the ids as text.
+        $items = [Item::create('9', Dimensions::mm(100, 100, 100), '1000g', 1), Item::create('10', Dimensions::mm(100, 100, 100), '1000g', 1)];
+        $containers = [Container::create('box', Dimensions::mm(200, 100, 200), 0, null, null, 0, 1)];
+        $fixedAt = static fn(string $type, int $x, int $z): FixedPlacement => new FixedPlacement($type, 'box', new Point(Length::mm($x)->ticks, 0, Length::mm($z)->ticks), Rotation::LWH, 1);
+        $packed = (new Packer(new PackingConfig()))->pack($items, $containers, [$fixedAt('9', 0, 0), $fixedAt('10', 100, 0)]);
+        $moved = new PackingRequest($items, $containers, [$fixedAt('9', 0, 100), $fixedAt('10', 100, 100)]);
+        $report = (new IndependentSolutionValidator())->validate($moved, $packed->containers, 0.0, null, $packed->unpacked);
+        $movedIds = array_values(array_map(static fn($issue): string => explode(' ', $issue->detail)[0],
+            array_filter($report->issues, static fn($issue): bool => $issue->code === 'fixed_placement_moved')));
+        self::assertSame(['10', '9'], $movedIds);
+    }
+
     public static function testTheValidatorCatchesAMissingFixedContainer(): void
     {
         [$items, $containers] = self::domain();

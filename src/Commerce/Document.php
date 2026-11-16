@@ -80,8 +80,17 @@ final readonly class Document
                 ['minimum_charge_minor', 'fuel_surcharge_permille', 'accessorials'],
             );
             $costs = [];
-            foreach (Shape::map($fields['cost_per_dimensional_kg_minor'], "{$path}.cost_per_dimensional_kg_minor") as $zone => $cost) {
-                $costs[(string)$zone] = Shape::integer($cost, "{$path}.cost_per_dimensional_kg_minor[{$zone}]");
+            $zones = Shape::map($fields['cost_per_dimensional_kg_minor'], "{$path}.cost_per_dimensional_kg_minor");
+            // Validated in code-point order of the zone key (PHP turns numeric-looking keys into ints),
+            // so the first error never depends on the order a language iterates the mapping in.
+            $zoneKeys = array_map('strval', array_keys($zones));
+            usort($zoneKeys, 'strcmp');
+            foreach ($zoneKeys as $zone) {
+                Shape::integer($zones[$zone], "{$path}.cost_per_dimensional_kg_minor[{$zone}]");
+            }
+            // Insertion order is kept for the tariff itself.
+            foreach ($zones as $zone => $cost) {
+                $costs[(string)$zone] = $cost;
             }
             Shape::model($path, static fn() => $registry->publish(
                 $carrierId, $serviceId,

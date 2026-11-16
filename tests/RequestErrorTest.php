@@ -19,6 +19,8 @@ use RuntimeException;
  */
 final class RequestErrorTest extends TestCase
 {
+    private const TOP_BRACKET_MESSAGE = 'must price its top bracket at most 9007199254740991 minor units with the fuel surcharge';
+
     public static function testTheErrorCarriesItsCodeReasonFieldAndDetail(): void
     {
         $error = new InvalidRequestException('below_minimum', '/items/0/quantity', 'must be at least 1');
@@ -119,6 +121,16 @@ final class RequestErrorTest extends TestCase
                 'wrong_type', '/containers/0/rate_table/weight_brackets_g', 'must be a list'],
             'negative surcharge' => [static function (array &$r): void { $r['containers'][0]['rate_table'] = ['fuel_surcharge_permille' => -1]; },
                 'below_minimum', '/containers/0/rate_table/fuel_surcharge_permille', 'must be at least 0'],
+            'top bracket with surcharge one above 2^53 - 1' => [static function (array &$r): void { $r['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000], 'prices_minor' => [4503599627370496], 'fuel_surcharge_permille' => 1000]; },
+                'above_maximum', '/containers/0/rate_table', self::TOP_BRACKET_MESSAGE],
+            'top bracket far past 2^64' => [static function (array &$r): void { $r['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000], 'prices_minor' => [9007199254740991], 'fuel_surcharge_permille' => 9007199254740991]; },
+                'above_maximum', '/containers/0/rate_table', self::TOP_BRACKET_MESSAGE],
+            'minimum charge lifts a cheap table past the ceiling' => [static function (array &$r): void { $r['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000], 'prices_minor' => [1], 'minimum_charge_minor' => 9007199254740991, 'fuel_surcharge_permille' => 1]; },
+                'above_maximum', '/containers/0/rate_table', self::TOP_BRACKET_MESSAGE],
+            'dearest bracket is not the last' => [static function (array &$r): void { $r['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000, 5000], 'prices_minor' => [4503599627370496, 1], 'fuel_surcharge_permille' => 1000]; },
+                'above_maximum', '/containers/0/rate_table', self::TOP_BRACKET_MESSAGE],
+            'a wrong-typed price reports its own error first' => [static function (array &$r): void { $r['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000], 'prices_minor' => ['9'], 'fuel_surcharge_permille' => 9007199254740991]; },
+                'wrong_type', '/containers/0/rate_table/prices_minor/0', 'must be an integer'],
             'catalog reference not an object' => [static function (array &$r): void { $r['catalog_versions_used'] = [5]; },
                 'invalid_value', '', 'catalog_versions_used[0] must be an object'],
             'catalog reference missing a field' => [static function (array &$r): void { $r['catalog_versions_used'] = [['catalog_id' => 'cartons', 'version' => 1]]; },
@@ -177,6 +189,17 @@ final class RequestErrorTest extends TestCase
             'minimum_charge_minor' => 100, 'fuel_surcharge_permille' => 50];
         RequestRules::check($request);
         self::assertContains(ArrayCodec::pack($request)['status'], ['feasible', 'optimal']);
+    }
+
+    public static function testALandedCostExactlyAtTheCeilingIsAdmitted(): void
+    {
+        foreach ([[9007199254740991, 0, 0], [4503599627370495, 0, 1000], [1, 9007199254740991, 0]] as [$price, $minimum, $permille]) {
+            $request = self::request();
+            $request['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000], 'prices_minor' => [$price],
+                'minimum_charge_minor' => $minimum, 'fuel_surcharge_permille' => $permille];
+            RequestRules::check($request);
+        }
+        self::assertTrue(true);
     }
 
     public static function testWhatTheRulesDoNotNameIsStillARequestError(): void

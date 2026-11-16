@@ -42,6 +42,7 @@ use Packvium\Domain\Placement;
 use Packvium\Domain\Point;
 use Packvium\Domain\Rotation;
 use Packvium\Domain\ShapeType;
+use Packvium\Extension\CandidateScorer;
 use Packvium\Extension\DefaultCandidateScorer;
 use Packvium\Support\BigInt;
 use Packvium\Unit\Length;
@@ -2028,5 +2029,48 @@ final class SolverTest extends TestCase
         $expected = $items[0]->id() . '@0,0,0|' . $items[1]->id() . '@1600000,0,0';
         self::assertSame($expected, $state->placementSignature());
         self::assertSame($expected, $state->copy()->placementSignature());
+    }
+
+    public static function testNumericLookingContainerIdsTieBreakByCodePointNotByNumericValue(): void
+    {
+        // Two identical containers differ only by id; "10" precedes "9" by code point,
+        // as in the other engines, though 9 < 10 as numbers.
+        $items = [Support::item('9', 100, 100, 100), Support::item('10', 100, 100, 100)];
+        $containers = [
+            Support::box('9', 100, 100, 100, ['quantity' => 1]),
+            Support::box('10', 100, 100, 100, ['quantity' => 1]),
+        ];
+        foreach ([PackingConfig::balanced(), PackingConfig::quality()] as $config) {
+            $result = Support::pack($items, $containers, $config);
+            self::assertSame(
+                ['10', '9'],
+                array_map(static fn($c): string => $c->container->id, $result->containers),
+            );
+        }
+    }
+
+    public static function testASupportDiagnosticThatRunsOutOfBudgetGivesNoVerdictInsteadOfThrowing(): void
+    {
+        // The post-solve "was support the blocker?" replay has its own budget; when a
+        // search inside it is cut, the diagnostic must stay silent, not escape `pack()`.
+        $scorer = new class implements CandidateScorer {
+            public function score(ContainerState $state, Point $point, Dimensions $envelope): array
+            {
+                throw new TimeLimitReached();
+            }
+        };
+        $box = Support::box('box', 200, 200, 200);
+        $item = Support::item('cube', 50, 50, 50);
+        $method = new ReflectionMethod(SolverOrchestrator::class, 'supportIsTheBlocker');
+        $method->setAccessible(true);
+
+        $verdict = $method->invoke(
+            new SolverOrchestrator(candidateScorer: $scorer),
+            $item->instances()[0],
+            [new PackedContainer($box, 1, [])],
+            new PackingConfig(minimumSupportRatio: 0.5),
+        );
+
+        self::assertFalse($verdict);
     }
 }

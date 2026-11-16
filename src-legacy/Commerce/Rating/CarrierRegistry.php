@@ -2,7 +2,10 @@
 declare(strict_types=1);
 namespace Packvium\Commerce\Rating;
 
+use Packvium\Commerce\CommerceInputException;
 use Packvium\Support\Arithmetic;
+use Packvium\Support\CanonicalJson;
+use Packvium\Support\ExactInteger;
 
 /**
  * Per-(carrier_id, service_id) append-only tariff history, and the rating itself.
@@ -111,31 +114,51 @@ final class CarrierRegistry
             throw new UnavailableServiceException("tariff {$tariff->carrierId}/{$tariff->serviceId} v{$tariff->version} does not offer requested accessorial(s)", null, $unknown);
         }
 
-        // 1 mm^3 of volume divided by the tariff's divisor gives dimensional weight in
-        // grams, rounded up -- never down, never through a float.
-        $dimensionalWeightG = Arithmetic::mulDivCeil($request->volumeMm3, 1, $tariff->dimensionalWeightDivisor);
-        $billedWeightG = max($request->actualWeightG, $dimensionalWeightG);
+        // Every amount is computed exactly and then held to the one ceiling an engine can
+        // report without rounding (M2): the first reported amount above it refuses the quote.
+        $dimensionalWeightG = Arithmetic::mulDivCeilExact($request->volumeMm3, 1, $tariff->dimensionalWeightDivisor);
+        $billedWeightG = ExactInteger::max($request->actualWeightG, $dimensionalWeightG);
 
-        $rawBaseChargeMinor = Arithmetic::mulDivCeil($billedWeightG, $tariff->costPerDimensionalKgMinor[$request->zone], 1000);
-        $minimumApplied = $rawBaseChargeMinor < $tariff->minimumChargeMinor;
+        $rawBaseChargeMinor = Arithmetic::mulDivCeilExact($billedWeightG, $tariff->costPerDimensionalKgMinor[$request->zone], 1000);
+        $minimumApplied = ExactInteger::compare($rawBaseChargeMinor, $tariff->minimumChargeMinor) < 0;
         $baseChargeMinor = $minimumApplied ? $tariff->minimumChargeMinor : $rawBaseChargeMinor;
-
-        $fuelSurchargeMinor = Arithmetic::mulDivCeil($baseChargeMinor, $tariff->fuelSurchargePermille, 1000);
+        $fuelSurchargeMinor = Arithmetic::mulDivCeilExact($baseChargeMinor, $tariff->fuelSurchargePermille, 1000);
 
         $accessorialCharges = [];
         $accessorialTotal = 0;
         foreach ($request->requestedAccessorials as $accessorialId) {
             $amount = $tariff->accessorials[$accessorialId]->chargeMinor($baseChargeMinor);
             $accessorialCharges[] = [$accessorialId, $amount];
-            $accessorialTotal += $amount;
+            $accessorialTotal = ExactInteger::add($accessorialTotal, $amount);
+        }
+        $totalMinor = ExactInteger::add(ExactInteger::add($baseChargeMinor, $fuelSurchargeMinor), $accessorialTotal);
+
+        $reported = [$dimensionalWeightG, $billedWeightG, $baseChargeMinor, $fuelSurchargeMinor];
+        foreach ($accessorialCharges as [, $amount]) {
+            $reported[] = $amount;
+        }
+        $reported[] = $totalMinor;
+        foreach ($reported as $value) {
+            self::requireReportable($value);
         }
 
         return new RateBreakdown(
             $tariff->carrierId, $tariff->serviceId, $tariff->version, $request->zone,
             $request->actualWeightG, $dimensionalWeightG, $billedWeightG, $baseChargeMinor,
-            $minimumApplied, $fuelSurchargeMinor, $accessorialCharges,
-            $baseChargeMinor + $fuelSurchargeMinor + $accessorialTotal,
+            $minimumApplied, $fuelSurchargeMinor, $accessorialCharges, $totalMinor,
         );
+    }
+
+    /**
+     * @param int|string $value
+     */
+    private static function requireReportable($value): void
+    {
+        if (ExactInteger::compare($value, CanonicalJson::MAX_EXACT_MAGNITUDE) > 0) {
+            throw new CommerceInputException(
+                "quote amount {$value} is above " . CanonicalJson::MAX_EXACT_MAGNITUDE . ' and cannot be represented exactly'
+            );
+        }
     }
 
     private static function key(string $carrierId, string $serviceId): string

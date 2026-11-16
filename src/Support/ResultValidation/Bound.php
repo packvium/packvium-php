@@ -12,7 +12,8 @@ use Packvium\Validation\ResultIssue;
  * The reference's own copy of docs/OPTIMALITY-CERTIFICATES.md's formulas and its one refusal
  * predicate, shared with nothing in the PHP engine (`Algorithm\ObjectiveBounds` is what it checks).
  * Exact at any size through `Exact`. O(t log t + c log c) for `t` item types and `c` container
- * types, O(t + c) memory, once per result.
+ * types, O(t + c) memory, once per result; a billed objective's key adds O(c b (t + log(c b)))
+ * for `b` rate-table brackets per type.
  */
 final class Bound
 {
@@ -26,7 +27,11 @@ final class Bound
         'maximum_value' => [0, 'value_forgone', 1, 2, 3],
         'open_dimension_height' => [0, 'achieved_height', 1, 2, 3],
         'maximum_volume' => ['unpacked_volume_ppm', 0, 1, 2, 3],
+        'shipping_cost' => [0, 'billed_weight', 1, 3, 4],
+        'lowest_landed_cost' => [0, 'landed_charge', 1, 3, 4],
     ];
+    /** The objectives whose own key is what a carrier bills. */
+    private const BILLED = ['shipping_cost', 'lowest_landed_cost'];
     private const MAX_BOUND_SUM = '1000000000000000000000000000000';
     private const MAX_BOUND_VALUE = 9007199254740991;
     private const SCORE_SCALE = 1000000;
@@ -158,7 +163,64 @@ final class Bound
             return [null, "status is 'invalid_result'"];
         }
         [$volumes, $weights, $values, $shrinks, $types] = self::inputs($items, $containers);
-        return self::objectiveBound($volumes, $weights, $values, $shrinks, $types, $name);
+        $billing = \in_array($name, self::BILLED, true)
+            ? self::billing(Json::get($request, 'configuration', []), $containers) : null;
+        return self::objectiveBound($volumes, $weights, $values, $shrinks, $types, $name, $billing);
+    }
+
+    /**
+     * What a carrier can bill each type at the least, or null without a divisor:
+     * `floor` is `max(tare, dimensional)` -- the dimensional weight of the declared outer size,
+     * else the declared floor and height, and 0 for a bag, whose billed package can be smaller
+     * -- and `brackets` the rate table as `[bound in weight ticks, charge]`, the minimum charge
+     * and the surcharge rounded up already applied. O(c b) for `b` brackets per type.
+     *
+     * @param mixed $configuration @param Ordered<ContainerSpec> $containers
+     * @return list<array{floor:int|string,tare:int|string,brackets:list<array{0:int|string,1:int|string|null}>}>|null
+     */
+    private static function billing($configuration, Ordered $containers): ?array
+    {
+        $divisor = Json::get($configuration, 'dimensional_weight_divisor');
+        if ($divisor === null) {
+            return null;
+        }
+        $lengthUnit = Json::text(Json::get($configuration, 'dimensional_weight_length_unit', 'in'), 'dimensional_weight_length_unit');
+        $weightUnit = Json::text(Json::get($configuration, 'dimensional_weight_weight_unit', 'lb'), 'dimensional_weight_weight_unit');
+        $billing = [];
+        foreach ($containers->values() as $spec) {
+            $size = $spec->outer ?? ($spec->deck === null ? $spec->inner : [$spec->deck[2], $spec->deck[3], $spec->inner[2]]);
+            $dimensional = $spec->flatBag ? 0 : ObjectiveCheck::dimensionalWeight($size, Json::int($divisor, 'dimensional_weight_divisor'), $lengthUnit, $weightUnit);
+            $billing[] = [
+                'floor' => Exact::max($spec->tareWeight, $dimensional),
+                'tare' => $spec->tareWeight,
+                'brackets' => self::brackets($spec->rateTable),
+            ];
+        }
+        return $billing;
+    }
+
+    /** @param mixed $table @return list<array{0:int|string,1:int|string}> */
+    private static function brackets($table): array
+    {
+        if ($table === null) {
+            return [];
+        }
+        $read = static function ($value, string $what) { return Json::pyInt($value, $what); };
+        $prices = Json::items(Json::at($table, 'prices_minor'), 'prices_minor');
+        $minimum = $read(Json::get($table, 'minimum_charge_minor', 0), 'minimum_charge_minor');
+        $permille = $read(Json::get($table, 'fuel_surcharge_permille', 0), 'fuel_surcharge_permille');
+        $brackets = [];
+        foreach (Json::items(Json::at($table, 'weight_brackets_g'), 'weight_brackets_g') as $index => $grams) {
+            if (!\array_key_exists($index, $prices)) {
+                break;
+            }
+            $base = Exact::max($read($prices[$index], 'price'), $minimum);
+            $brackets[] = [
+                Exact::mul($read($grams, 'bracket'), Units::TICKS_PER_GRAM),
+                Exact::add($base, Exact::ceilDiv(Exact::mul($base, $permille), 1000)),
+            ];
+        }
+        return $brackets;
     }
 
     /**
@@ -169,16 +231,28 @@ final class Bound
      * @param list<array{0:int|string,1:int|string}> $volumes value runs sorted ascending
      * @param list<array{0:int|string,1:int|string}> $weights @param list<array{0:int|string,1:int|string}> $values
      * @param list<array<string,int|string|null>> $containers
+     * @param list<array{floor:int|string,tare:int|string,brackets:list<array{0:int|string,1:int|string|null}>}>|null $billing
+     *   per type, in `$containers`' order; read by the billed objectives only, null without a divisor
      * @return array{0:list<int|string>|null,1:string}
      */
-    public static function objectiveBound(array $volumes, array $weights, array $values, bool $shrinks, array $containers, string $objective): array
+    public static function objectiveBound(array $volumes, array $weights, array $values, bool $shrinks, array $containers, string $objective, ?array $billing = null): array
     {
         $bound = self::lowerBound($volumes, $weights, $shrinks, $containers);
         if ($bound === null) {
             return [null, 'the request is past a declared ceiling'];
         }
-        $stated = \array_map(static function ($position) use ($bound, $volumes, $values, $shrinks, $containers) {
-            return \is_int($position) ? $bound[$position] : self::objectiveTerm($position, $volumes, $values, $shrinks, $containers, $bound[0]);
+        $billed = null;
+        if (\in_array($objective, self::BILLED, true)) {
+            $billed = $billing === null ? null : self::billedTerm($objective, $billing, $volumes, $weights, $shrinks, $containers, $bound);
+            if ($billed === null) {
+                return [null, 'no priceable inventory carries a packing that attains the count bound'];
+            }
+        }
+        $stated = \array_map(static function ($position) use ($bound, $billed, $volumes, $values, $shrinks, $containers) {
+            if (\is_int($position)) {
+                return $bound[$position];
+            }
+            return $billed ?? self::objectiveTerm($position, $volumes, $values, $shrinks, $containers, $bound[0]);
         }, self::ORDERS[$objective]);
         foreach ($stated as $value) {
             if (Exact::compare($value, self::MAX_BOUND_VALUE) > 0) {
@@ -215,6 +289,129 @@ final class Bound
             return 0;
         }
         return Exact::ceilDiv(Exact::mul(Exact::max(0, Exact::sub($requested, $capacity)), self::SCORE_SCALE), $requested);
+    }
+
+    /**
+     * The billed key of `shipping_cost` or `lowest_landed_cost`, or null when no
+     * priceable inventory carries a packing that leaves exactly `L0` behind.
+     *
+     * Each opened container bills at least its floor and at least its tare plus what it
+     * carries. A rate-table bracket is reachable from a floor within it; there a container
+     * carries at most the bracket's bound less its tare (and its `max_payload`), so at most the
+     * lightest-first count under that, its usable volume and `max_items`. The cheapest
+     * reachable charge over the `L1` containers, the cheapest cover of the placed weight and of
+     * the placed count each bound the charge; the largest is stated. O(t + c b (t + log(c b)))
+     * for `t` runs and `b` brackets per type.
+     *
+     * @param list<array{floor:int|string,tare:int|string,brackets:list<array{0:int|string,1:int|string|null}>}> $billing
+     * @param list<array{0:int|string,1:int|string}> $volumes @param list<array{0:int|string,1:int|string}> $weights
+     * @param list<array<string,int|string|null>> $containers @param list<int|string> $bound @return int|string|null
+     */
+    private static function billedTerm(string $objective, array $billing, array $volumes, array $weights, bool $shrinks, array $containers, array $bound)
+    {
+        [$unpacked, $opened] = $bound;
+        $placed = Exact::sub(self::runCount($volumes), $unpacked);
+        if ($objective === 'shipping_cost') {
+            if (Exact::sign($opened) === 0) {
+                return 0;
+            }
+            $quantities = self::column($containers, 'quantity');
+            $byFloor = self::leastOfInventory(\array_column($billing, 'floor'), $quantities, $opened);
+            $byTare = self::leastOfInventory(\array_column($billing, 'tare'), $quantities, $opened);
+            if ($byFloor === null || $byTare === null) {
+                return null;
+            }
+            return Exact::max($byFloor, Exact::add($byTare, self::smallest($weights, $placed)));
+        }
+        if (Exact::sign($opened) === 0 || Exact::sign($placed) === 0) {
+            return 0;
+        }
+        $cheapest = $cheapestQuantities = $byWeight = $byItems = [];
+        foreach ($billing as $index => $billed) {
+            $container = $containers[$index];
+            $charges = [];
+            foreach ($billed['brackets'] as [$limit, $charge]) {
+                if ($charge === null || Exact::compare($billed['floor'], $limit) > 0) {
+                    continue;
+                }
+                $carried = Exact::sub($limit, $billed['tare']);
+                if ($container['payload'] !== null) {
+                    $carried = self::min($carried, $container['payload']);
+                }
+                $count = self::fit($weights, $carried);
+                if (!$shrinks) {
+                    $count = self::min($count, self::fit($volumes, $container['usable']));
+                }
+                if ($container['max_items'] !== null) {
+                    $count = self::min($count, $container['max_items']);
+                }
+                $charges[] = $charge;
+                $byWeight[] = [$charge, $carried, $container['quantity']];
+                $byItems[] = [$charge, $count, $container['quantity']];
+            }
+            if ($charges !== []) {
+                $cheapest[] = \array_reduce($charges, static function ($least, $charge) { return self::min($least, $charge); }, $charges[0]);
+                $cheapestQuantities[] = $container['quantity'];
+            }
+        }
+        $terms = [
+            self::leastOfInventory($cheapest, $cheapestQuantities, $opened),
+            self::fractionalCover($byWeight, self::smallest($weights, $placed)),
+            self::fractionalCover($byItems, $placed),
+        ];
+        return \in_array(null, $terms, true) ? null : self::largest($terms);
+    }
+
+    /**
+     * The `count` smallest of `{value repeated quantity}`, summed; null if fewer exist.
+     *
+     * @param list<int|string> $values @param list<int|string|null> $quantities @param int|string $count @return int|string|null
+     */
+    private static function leastOfInventory(array $values, array $quantities, $count)
+    {
+        $order = \array_keys($values);
+        \usort($order, static function (int $left, int $right) use ($values): int {
+            return Exact::compare($values[$left], $values[$right]) ?: $left <=> $right;
+        });
+        $total = 0;
+        foreach ($order as $index) {
+            if (Exact::sign($count) <= 0) {
+                break;
+            }
+            $taken = $quantities[$index] === null ? $count : self::min($quantities[$index], $count);
+            $total = Exact::add($total, Exact::mul($values[$index], $taken));
+            $count = Exact::sub($count, $taken);
+        }
+        return Exact::sign($count) > 0 ? null : $total;
+    }
+
+    /**
+     * Least cost covering `need` from `[cost, capacity, quantity]` offers taken fractionally,
+     * rounded up; greedy by cost per unit is optimal for one covering constraint. Exact: whole
+     * offers sum as integers and the one share taken in part is the only fraction, rounded once.
+     *
+     * @param list<array{0:int|string,1:int|string,2:int|string|null}> $offers @param int|string $need @return int|string|null
+     */
+    private static function fractionalCover(array $offers, $need)
+    {
+        if (Exact::sign($need) <= 0) {
+            return 0;
+        }
+        $ranked = \array_values(\array_filter($offers, static function (array $offer): bool { return Exact::sign($offer[1]) > 0; }));
+        $order = \array_keys($ranked);
+        \usort($order, static function (int $left, int $right) use ($ranked): int {
+            return Exact::compare(Exact::mul($ranked[$left][0], $ranked[$right][1]), Exact::mul($ranked[$right][0], $ranked[$left][1])) ?: $left <=> $right;
+        });
+        $total = 0;
+        foreach ($order as $index) {
+            [$cost, $capacity, $quantity] = $ranked[$index];
+            if ($quantity === null || Exact::compare(Exact::mul($quantity, $capacity), $need) >= 0) {
+                return Exact::add($total, Exact::ceilDiv(Exact::mul($cost, $need), $capacity));
+            }
+            $total = Exact::add($total, Exact::mul($cost, $quantity));
+            $need = Exact::sub($need, Exact::mul($capacity, $quantity));
+        }
+        return null;
     }
 
     /**

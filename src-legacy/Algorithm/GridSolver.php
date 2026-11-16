@@ -29,9 +29,9 @@ final class GridSolver implements SingleContainerSolver
         foreach($item->dimensions->uniqueRotations($item->allowedRotations) as [, $physical])
             $footprints[]="{$physical->length->ticks}x{$physical->width->ticks}x{$physical->height->ticks}";
         sort($footprints);
-        $tags=$item->tags;sort($tags);
-        $incompatibleTags=$item->incompatibleTags;sort($incompatibleTags);
-        $eligibleContainerTags=$item->eligibleContainerTags;sort($eligibleContainerTags);
+        $tags=$item->tags;sort($tags,SORT_STRING);
+        $incompatibleTags=$item->incompatibleTags;sort($incompatibleTags,SORT_STRING);
+        $eligibleContainerTags=$item->eligibleContainerTags;sort($eligibleContainerTags,SORT_STRING);
         $acceptsStackingGroups=$item->acceptsStackingGroups;sort($acceptsStackingGroups,SORT_STRING);
         return json_encode([
             $footprints,$item->weight->ticks,$item->stackable,$item->mustBeOnFloor,

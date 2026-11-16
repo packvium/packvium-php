@@ -31,7 +31,7 @@ final class ContainerPlanBeam
             return $container->quantity??count($items);
         },$containers));
         $ordered=StableSorter::sortBy($containers,static function (Container $container): array {
-            return array_merge([$container->costMinor], $container->innerDimensions->volumeKey(), [$container->id]);
+            return array_merge([$container->costMinor], $container->innerDimensions->volumeKey(), [StableSorter::textKey($container->id)]);
         });
         // A beam wider than its node budget used to stop after trying the first
         // container in static order, so the order chose it, not the objective. The budget is at

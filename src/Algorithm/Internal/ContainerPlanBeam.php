@@ -28,7 +28,7 @@ final class ContainerPlanBeam
         $beam=$reached?[]:[$initial];$incumbent=$initial;$nodes=0;
         $incumbentScore=self::planScore($incumbent,$incumbent['remaining'],$config);
         $maximum=$config->maxContainers??array_sum(array_map(static fn(Container $container):int=>$container->quantity??count($items),$containers));
-        $ordered=StableSorter::sortBy($containers,static fn(Container $container):array=>[$container->costMinor,...$container->innerDimensions->volumeKey(),$container->id]);
+        $ordered=StableSorter::sortBy($containers,static fn(Container $container):array=>[$container->costMinor,...$container->innerDimensions->volumeKey(),StableSorter::textKey($container->id)]);
         // A beam wider than its node budget used to stop after trying the first
         // container in static order, so the order chose it, not the objective. The budget is at
         // least one trial per container type for every plan the beam keeps.

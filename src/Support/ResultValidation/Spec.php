@@ -90,7 +90,13 @@ final class Spec
         foreach (Json::items(Json::at($request, 'containers'), 'request.containers') as $raw) {
             $spec = new ContainerSpec();
             $spec->id = Json::at($raw, 'id');
-            [$spec->inner, $spec->deck] = self::frameAndDeck(Units::dimensions(Json::at($raw, 'inner_dimensions'), $unit), Json::get($raw, 'pallet_overhang_limit'), $unit);
+            $boundary = Json::get($raw, 'deformable_boundary');
+            $standing = $boundary !== null && Json::get($boundary, 'orientation') === 'standing';
+            $declared = Units::dimensions(Json::at($raw, 'inner_dimensions'), $unit);
+            if ($standing) {
+                $declared = [$declared[1], $declared[2], $declared[0]];
+            }
+            [$spec->inner, $spec->deck] = self::frameAndDeck($declared, Json::get($raw, 'pallet_overhang_limit'), $unit);
             $spec->accessDirections = self::accessDirections($raw);
             $outer = Json::get($raw, 'outer_dimensions');
             $spec->outer = $outer === null ? null : Units::dimensions($outer, $unit);
@@ -106,8 +112,10 @@ final class Spec
             $spec->axles = self::axles($raw, $unit);
             $spec->maxStackDensity = self::measured($raw, 'max_stack_density', 'g', Units::WEIGHT);
             $spec->rateTable = Json::get($raw, 'rate_table');
-            $spec->flatBag = Json::get($raw, 'deformable_boundary') !== null;
-            $spec->sideGusset = self::sideGusset(Json::get($raw, 'deformable_boundary'), $unit);
+            $spec->flatBag = $boundary !== null;
+            $spec->sideGusset = self::gusset($boundary, 'side_gusset_depth', $unit);
+            $spec->bottomGusset = self::gusset($boundary, 'bottom_gusset_depth', $unit);
+            $spec->standing = $standing;
             $spec->reportsAchievedExtent = $spec->flatBag || Json::get($raw, 'made_to_measure') !== null || $spec->deck !== null;
             $machine = Json::get($raw, 'made_to_measure');
             $spec->madeToMeasure = $machine === null ? null : self::machine($machine, $unit);
@@ -117,13 +125,13 @@ final class Spec
     }
 
     /**
-     * A gusseted bag's side gusset depth in ticks, else 0.
+     * A gusseted bag's side or bottom gusset depth in ticks, else 0.
      *
      * @param mixed $boundary @return int|string
      */
-    private static function sideGusset($boundary, string $unit)
+    private static function gusset($boundary, string $name, string $unit)
     {
-        $depth = $boundary === null ? null : Json::get($boundary, 'side_gusset_depth');
+        $depth = $boundary === null ? null : Json::get($boundary, $name);
         return $depth === null ? 0 : Units::toTicks($depth, $unit, Units::LENGTH);
     }
 

@@ -1,28 +1,29 @@
 # Packvium for PHP
 
-Deterministic 3D cartonization and rectangular bin packing. Pure PHP, **no runtime
-dependencies**, exact integer geometry.
+Deterministic 3D bin packing and cartonization in pure PHP. No runtime dependencies, no
+extensions, and exact integer geometry instead of floats.
 
 Use it to pick the smallest carton for an order, build a pallet, load a shipping container,
 or load a truck within its axle ratings and delivery-stop order. Every answer comes back as
 coordinates and rotations for each item, with a reason for anything that did not fit.
 
-Full documentation, the constraint reference and benchmarks live at
-[packvium.com](https://packvium.com).
-
-> **Version 1.10.0 — the public API is frozen.** Field names, status codes and the
+> **Version 1.11.0 — the public API is frozen.** Field names, status codes and the
 > objective vector do not change without a major version, so any `1.x` is a safe upgrade
 > from any earlier `1.x`.
-> Read [docs/GUARANTEES.md](https://github.com/toxakara/packvium-php/blob/main/docs/GUARANTEES.md)
+> Read [docs/GUARANTEES.md](https://github.com/packvium/packvium-php/blob/main/docs/GUARANTEES.md)
 > before relying on a result.
+
+## Install
 
 ```bash
 composer require packvium/packvium
 ```
 
 The library runs on PHP 7.3 and newer. The quick start below and the shipped examples are
-written for **PHP 8.2 or newer**; [Older PHP](#older-php-73-to-81) shows what changes below
-that.
+written for PHP 8.2 or newer; [Older PHP](#older-php-73-to-81) shows what changes below
+that. It is framework-independent: no facades, no static state, no container bindings.
+Construct a `Packer`, or call `ArrayCodec::pack`, from a Laravel job, a Symfony service or
+a WordPress hook alike.
 
 ## Quick start
 
@@ -70,69 +71,30 @@ echo '{"items":[{"id":"box","quantity":8,"dimensions":{"length":"50","width":"50
   | vendor/bin/packvium
 ```
 
-Support is not required by default: `minimum_support_ratio` is 0, so an item may rest on
-nothing above the container floor, and the result then says so in `warnings`
-(`unsupported_placements: N placement(s) rest on nothing above the container floor; ...`).
-To require support, set it above 0 — `'configuration' => ['minimum_support_ratio' => 0.75]`, or
-`new PackingConfig(minimumSupportRatio: 0.75)` in the object API.
+## Using it in your project
 
-The library is framework-independent: no facades, no static state, no container bindings.
-Construct a `Packer` and call it.
+Two examples are written the way application code is written, with your own product and
+order records on one side and the library call in the middle. Start from the one closer to
+what you are building.
 
-## Units
+| You are building | Start from | What it does |
+| --- | --- | --- |
+| A checkout or cart page | [`checkout.php`](https://github.com/packvium/packvium-php/blob/main/examples/checkout.php) | Maps a cart onto a request, picks the cheapest cartons, and reads the parcels back for the page. Two functions hold everything Packvium-specific. |
+| A warehouse or fulfilment job | [`fulfilment.php`](https://github.com/packvium/packvium-php/blob/main/examples/fulfilment.php) | Runs an order from paid to labelled: a shipping rule picks the carrier service, the order is packed under its constraints, `validate` checks the plan, and every parcel is priced from a pinned tariff. |
+| An HTTP endpoint that packs | [`errors.php`](https://github.com/packvium/packvium-php/blob/main/examples/errors.php) | Turns each kind of refused request into a 422 that names the item and the value. |
+| A dock or driver screen | [`execution.php`](https://github.com/packvium/packvium-php/blob/main/examples/execution.php), [`trucking.php`](https://github.com/packvium/packvium-php/blob/main/examples/trucking.php) | Turns a result into numbered loading steps, and loads a van by stop and axle rating. |
 
-Every length is an integer number of ticks of 1/16000 mm, and every weight an integer
-number of 1/8 µg. Nothing on the path from request to score is a float, so no placement
-decision depends on rounding, and an imperial spec sheet and a metric container agree
-without a tolerance:
+Rules that most projects need on day one:
 
-```php
-Dimensions::inches('12 3/8', '8 1/2', '3/4');  // exact: fractions, mixed fractions, decimals
-Dimensions::mm('210', '140', '30');
-Item::create('mug', Dimensions::mm('100', '100', '120'), '12 oz');
-```
-
-Lengths accept `mm`, `cm`, `m`, `in`, `ft` and ticks; weights `mg`, `g`, `kg`, `oz` and `lb`.
-Pass numbers as strings or integers — the API has no float parameters for a measure. Round
-item exteriors outward and container interiors inward before building the request.
-Volumes that exceed `PHP_INT_MAX` are handled in exact decimal-string arithmetic rather
-than losing precision. A JSON request's `units` sets only the length unit; a weight takes its
-unit from the measure or is grams; any other `units` key, `weight` included, is refused. See
-[docs/UNITS-AND-NUMERICS.md](https://github.com/toxakara/packvium-php/blob/main/docs/UNITS-AND-NUMERICS.md)
-and [`units.php`](https://github.com/toxakara/packvium-php/blob/main/examples/units.php).
-
-## Determinism
-
-The same request, seed and budget give the same result. The one thing that can break that
-is the wall clock: `time_limit_ms` (`timeLimitMs`) stops the search when time runs out, and
-how far a search gets in that time depends on the machine and its load. A search that
-finishes inside its limit is reproducible; one the clock stopped is not.
-
-`effort_budget` bounds the search by counted work instead — candidates evaluated,
-placements attempted, search nodes expanded, portfolio restarts — so it stops at the same
-point everywhere. Keep `time_limit_ms` as a generous safety fuse beside it:
-
-```php
-$result = ArrayCodec::pack([
-    'configuration' => [
-        'effort_budget' => ['max_search_nodes' => 20000],
-        'time_limit_ms' => 60000,
-    ],
-    // items, containers ...
-]);
-$result['termination']['code'];                // "complete", "effort_limit" or "time_limit"
-```
-
-`termination` says which one stopped the search; only `time_limit` is a result you cannot
-replay. In the object API the budget is `new PackingConfig(effortBudget: new EffortBudget(...))`,
-with `Packvium\Config\EffortBudget`, part of the frozen API since 1.6.0.
-[`reproducibility.php`](https://github.com/toxakara/packvium-php/blob/main/examples/reproducibility.php)
-shows all three outcomes.
-
-`effort_limit` means the budget stopped work the search still had: a search that finishes on
-exactly its budget reads `complete`, and under a budget `time_limit_ms` is one fuse for the
-whole solve, not a slice per start. `termination.any_start_truncated` says whether the budget
-cut a start that might have won.
+- An item that does not fit is not an error. The result lists it in `unpacked_items` with a
+  reason, and everything else is still packed.
+- Support is not required by default: `minimum_support_ratio` is 0, so an item may rest on
+  nothing above the container floor, and the result then says so in `warnings`
+  (`unsupported_placements: N placement(s) rest on nothing above the container floor; ...`).
+  To require support, set it above 0: `'configuration' => ['minimum_support_ratio' => 0.75]`, or
+  `new PackingConfig(minimumSupportRatio: 0.75)` in the object API.
+- Set an `effort_budget` for any answer you store or show twice. See
+  [Getting the same answer every time](#getting-the-same-answer-every-time).
 
 ## Errors
 
@@ -177,7 +139,7 @@ try {
 
 A request that is valid but does not fit completely is not an error: the result lists what
 was left out, and why, in `unpacked_items`.
-[`errors.php`](https://github.com/toxakara/packvium-php/blob/main/examples/errors.php) turns
+[`errors.php`](https://github.com/packvium/packvium-php/blob/main/examples/errors.php) turns
 each kind of refusal into the answer a web handler would send.
 
 ## Checking a result
@@ -203,109 +165,170 @@ It shares no code with the engine, so it judges any engine's result, not only th
 result without the documented shape throws `Packvium\Validation\MalformedResult`, whose `kind`
 is `contract` or `shape`.
 
+## Units
+
+Every length is an integer number of ticks of 1/16000 mm, and every weight an integer
+number of 1/8 µg. Nothing on the path from request to score is a float, so no placement
+decision depends on rounding, and an imperial spec sheet and a metric container agree
+without a tolerance:
+
+```php
+Dimensions::inches('12 3/8', '8 1/2', '3/4');  // exact: fractions, mixed fractions, decimals
+Dimensions::mm('210', '140', '30');
+Item::create('mug', Dimensions::mm('100', '100', '120'), '12 oz');
+```
+
+Lengths accept `mm`, `cm`, `m`, `in`, `ft` and ticks; weights `mg`, `g`, `kg`, `oz` and `lb`.
+Pass numbers as strings or integers; the API has no float parameters for a measure. Round
+item exteriors outward and container interiors inward before building the request.
+Volumes that exceed `PHP_INT_MAX` are handled in exact decimal-string arithmetic rather
+than losing precision. A JSON request's `units` sets only the length unit; a weight takes its
+unit from the measure or is grams; any other `units` key, `weight` included, is refused. See
+[docs/UNITS-AND-NUMERICS.md](https://github.com/packvium/packvium-php/blob/main/docs/UNITS-AND-NUMERICS.md)
+and [`units.php`](https://github.com/packvium/packvium-php/blob/main/examples/units.php).
+
+## Getting the same answer every time
+
+The same request, seed and budget give the same result. The one thing that can break that
+is the wall clock: `time_limit_ms` (`timeLimitMs`) stops the search when time runs out, and
+how far a search gets in that time depends on the machine and its load. A search that
+finishes inside its limit is reproducible; one the clock stopped is not.
+
+`effort_budget` bounds the search by counted work instead (candidates evaluated,
+placements attempted, search nodes expanded, portfolio restarts), so it stops at the same
+point everywhere. Keep `time_limit_ms` as a generous safety fuse beside it:
+
+```php
+$result = ArrayCodec::pack([
+    'configuration' => [
+        'effort_budget' => ['max_search_nodes' => 20000],
+        'time_limit_ms' => 60000,
+    ],
+    // items, containers ...
+]);
+$result['termination']['code'];                // "complete", "effort_limit" or "time_limit"
+```
+
+`termination` says which one stopped the search; only `time_limit` is a result you cannot
+replay. In the object API the budget is `new PackingConfig(effortBudget: new EffortBudget(...))`,
+with `Packvium\Config\EffortBudget`, part of the frozen API since 1.6.0.
+[`reproducibility.php`](https://github.com/packvium/packvium-php/blob/main/examples/reproducibility.php)
+shows all three outcomes.
+
+`effort_limit` means the budget stopped work the search still had: a search that finishes on
+exactly its budget reads `complete`, and under a budget `time_limit_ms` is one fuse for the
+whole solve, not a slice per start. `termination.any_start_truncated` says whether the budget
+cut a start that might have won.
+
 ## Examples
 
-Runnable, in [`examples/`](https://github.com/toxakara/packvium-php/tree/main/examples). Each
+Runnable, in [`examples/`](https://github.com/packvium/packvium-php/tree/main/examples). Each
 one is a single file you can read top to bottom and execute without a project around it.
 Every one of them is executed by the test suite on each release, so none of them can
 quietly stop working. They are PHP 8.2 code (named arguments, enums); run them on 8.2 or
 newer.
 
-New here? Read `basic.php`, then `objectives.php` — between them they cover what most
-callers need. `units.php` and `serialization.php` explain the two design choices that
+New here? Read `basic.php`, then `objectives.php`. Between them they cover what most
+callers need, and `checkout.php` shows the same call inside a project. `units.php` and `serialization.php` explain the two design choices that
 surprise people.
 
 | File | What it shows |
 | --- | --- |
-| [`basic.php`](https://github.com/toxakara/packvium-php/blob/main/examples/basic.php) | The smallest useful call: items in, placements out — and the three details in it that are easy to miss. |
-| [`objectives.php`](https://github.com/toxakara/packvium-php/blob/main/examples/objectives.php) | Six of the seven objectives (all but `maximum_volume`) on scenes where they genuinely disagree, including the rate card that makes the heavier shipment the cheaper one — and the lower bound a result states, loose or attained. |
-| [`constraints.php`](https://github.com/toxakara/packvium-php/blob/main/examples/constraints.php) | Upright-only, floor-only, non-stackable, top-load limits, and tags that keep two items out of the same box — plus how to read the reason an item was refused. |
-| [`limits.php`](https://github.com/toxakara/packvium-php/blob/main/examples/limits.php) | A courier's refrigerated van and cargo bikes: obstacles built from `additional_boxes`, `max_items`, `tag_limits`, `eligible_container_tags` and `max_containers`, and what each one costs. |
-| [`units.php`](https://github.com/toxakara/packvium-php/blob/main/examples/units.php) | Why there are no floats anywhere: fractional inches, exact ticks, and the one-tick difference between a fit and a refusal. |
-| [`serialization.php`](https://github.com/toxakara/packvium-php/blob/main/examples/serialization.php) | The same request as JSON, the result in full with its `currency` and each `placement_id`, runners-up via `alternatives`, the signed rotations only a hull may use, and exactly which mistakes are refused and which are silently ignored. |
-| [`errors.php`](https://github.com/toxakara/packvium-php/blob/main/examples/errors.php) | A web handler that turns every refusal into a 422 naming the item and the value: each `InvalidRequestException` reason, the fixed-placement refusals, and the oversize order that is not an error at all. |
-| [`reproducibility.php`](https://github.com/toxakara/packvium-php/blob/main/examples/reproducibility.php) | `effortBudget` against `timeLimitMs` on four simulated hosts: a clock-stopped search that answers differently on each, a budget that answers the same on all of them, and how to read `termination`. |
-| [`trucking.php`](https://github.com/toxakara/packvium-php/blob/main/examples/trucking.php) | A van with two axle ratings, a rear door and three stops: the route-legal plan, axle loads, the unloading and loading order, what the driver can reach at the first stop, and what goes wrong without `stopIndex`. |
-| [`fixed_placements.php`](https://github.com/toxakara/packvium-php/blob/main/examples/fixed_placements.php) | Pack a trailer that already has four pallets on board: packing around them, the cost of one left in the wrong place, and the refusals when the record is impossible. |
-| [`shapes.php`](https://github.com/toxakara/packvium-php/blob/main/examples/shapes.php) | Items that are not their box: complementary wedges sharing one crate as `convex_hull`, and a cushion that compresses under load until the crush limit refuses it. |
-| [`nested.php`](https://github.com/toxakara/packvium-php/blob/main/examples/nested.php) | Units into cartons, cartons onto a pallet, in one call. |
-| [`packaging.php`](https://github.com/toxakara/packvium-php/blob/main/examples/packaging.php) | Packaging that is not a rigid box: a crate overhanging its pallet deck, a gusseted mailer that holds a layer a flat one cannot, a box cut to measure that keeps room for void fill, and `new NestedPacker(2)` letting the outer level choose the cartons. |
-| [`extensions.php`](https://github.com/toxakara/packvium-php/blob/main/examples/extensions.php) | Rules the request has no field for: a custom placement constraint and container selector through `ExtensionRegistry`, a custom solution scorer — and why a rule everyone must obey belongs in the request instead. |
-| [`commerce.php`](https://github.com/toxakara/packvium-php/blob/main/examples/commerce.php) | Rate a shipment, apply an eligibility rule, and pin a catalog version. |
-| [`execution.php`](https://github.com/toxakara/packvium-php/blob/main/examples/execution.php) | Turn a result into dock instructions: solver facts kept apart from screen text, and a step order that is injected or honestly absent — byte-identical to the other three engines. |
-| [`artifacts.php`](https://github.com/toxakara/packvium-php/blob/main/examples/artifacts.php) | Hand a result to a system with no engine: one document with the plan, geometry and the request that produced it, exported as CSV and a printable HTML work order — byte-identical to the other three engines. |
-| [`revisions.php`](https://github.com/toxakara/packvium-php/blob/main/examples/revisions.php) | Replan a half-loaded job: a missing item and a placement locked by its `placement_id`, a replan that keeps the locked item in place, a hash-chained record that notices an edit — the same digests as the other three engines — and a box already cut to measure offered back as stock. |
+| [`checkout.php`](https://github.com/packvium/packvium-php/blob/main/examples/checkout.php) | A shop's checkout: a cart mapped onto a request and the parcels read back, with the cheapest cartons chosen. |
+| [`fulfilment.php`](https://github.com/packvium/packvium-php/blob/main/examples/fulfilment.php) | An order from paid to labelled: a policy rule picks the service, the order is packed under its constraints, `validate` checks the plan, and each parcel is priced from a pinned tariff. |
+| [`basic.php`](https://github.com/packvium/packvium-php/blob/main/examples/basic.php) | The smallest useful call: items in, placements out, and the three details in it that are easy to miss. |
+| [`objectives.php`](https://github.com/packvium/packvium-php/blob/main/examples/objectives.php) | Six of the seven objectives (all but `maximum_volume`) on scenes where they disagree, including the rate card that makes the heavier shipment the cheaper one, and the lower bound a result states, loose or attained. |
+| [`constraints.php`](https://github.com/packvium/packvium-php/blob/main/examples/constraints.php) | Upright-only, floor-only, non-stackable, top-load limits, and tags that keep two items out of the same box, plus how to read the reason an item was refused. |
+| [`limits.php`](https://github.com/packvium/packvium-php/blob/main/examples/limits.php) | A courier's refrigerated van and cargo bikes: obstacles built from `additional_boxes`, `max_items`, `tag_limits`, `eligible_container_tags` and `max_containers`, and what each one costs. |
+| [`units.php`](https://github.com/packvium/packvium-php/blob/main/examples/units.php) | Why there are no floats anywhere: fractional inches, exact ticks, and the one-tick difference between a fit and a refusal. |
+| [`serialization.php`](https://github.com/packvium/packvium-php/blob/main/examples/serialization.php) | The same request as JSON, the result in full with its `currency` and each `placement_id`, runners-up via `alternatives`, the signed rotations only a hull may use, and exactly which mistakes are refused and which are silently ignored. |
+| [`errors.php`](https://github.com/packvium/packvium-php/blob/main/examples/errors.php) | A web handler that turns every refusal into a 422 naming the item and the value: each `InvalidRequestException` reason, the fixed-placement refusals, and the oversize order that is not an error at all. |
+| [`reproducibility.php`](https://github.com/packvium/packvium-php/blob/main/examples/reproducibility.php) | `effortBudget` against `timeLimitMs` on four simulated hosts: a clock-stopped search that answers differently on each, a budget that answers the same on all of them, and how to read `termination`. |
+| [`trucking.php`](https://github.com/packvium/packvium-php/blob/main/examples/trucking.php) | A van with two axle ratings, a rear door and three stops: the route-legal plan, axle loads, the unloading and loading order, what the driver can reach at the first stop, and what goes wrong without `stopIndex`. |
+| [`fixed_placements.php`](https://github.com/packvium/packvium-php/blob/main/examples/fixed_placements.php) | Pack a trailer that already has four pallets on board: packing around them, the cost of one left in the wrong place, and the refusals when the record is impossible. |
+| [`shapes.php`](https://github.com/packvium/packvium-php/blob/main/examples/shapes.php) | Items that are not their box: complementary wedges sharing one crate as `convex_hull`, and a cushion that compresses under load until the crush limit refuses it. |
+| [`nested.php`](https://github.com/packvium/packvium-php/blob/main/examples/nested.php) | Units into cartons, cartons onto a pallet, in one call. |
+| [`packaging.php`](https://github.com/packvium/packvium-php/blob/main/examples/packaging.php) | Packaging that is not a rigid box: a crate overhanging its pallet deck, a gusseted mailer that holds a layer a flat one cannot, a box cut to measure that keeps room for void fill, and `new NestedPacker(2)` letting the outer level choose the cartons. |
+| [`extensions.php`](https://github.com/packvium/packvium-php/blob/main/examples/extensions.php) | Rules the request has no field for: a custom placement constraint and container selector through `ExtensionRegistry`, a custom solution scorer, and why a rule everyone must obey belongs in the request instead. |
+| [`commerce.php`](https://github.com/packvium/packvium-php/blob/main/examples/commerce.php) | Rate a shipment, apply an eligibility rule, and pin a catalog version. |
+| [`execution.php`](https://github.com/packvium/packvium-php/blob/main/examples/execution.php) | Turn a result into dock instructions: solver facts kept apart from screen text, and a step order that is injected or absent. Byte-identical to the other three engines. |
+| [`artifacts.php`](https://github.com/packvium/packvium-php/blob/main/examples/artifacts.php) | Hand a result to a system with no engine: one document with the plan, geometry and the request that produced it, exported as CSV and a printable HTML work order. Byte-identical to the other three engines. |
+| [`revisions.php`](https://github.com/packvium/packvium-php/blob/main/examples/revisions.php) | Replan a half-loaded job: a missing item and a placement locked by its `placement_id`, a replan that keeps the locked item in place, a hash-chained record that notices an edit (the same digests as the other three engines), and a box already cut to measure offered back as stock. |
 
 ```bash
 php examples/objectives.php
 ```
 
 `limits.php`, `fixed_placements.php`, `nested.php` and `shapes.php` print byte for byte
-what their [Python counterparts](https://github.com/toxakara/packvium-python/tree/main/examples)
+what their [Python counterparts](https://github.com/packvium/packvium-python/tree/main/examples)
 print. `trucking.php`, `errors.php`, `reproducibility.php` and `constraints.php` differ only
 where a line names a PHP spelling (`stopIndex`, `allowedRotations`, `true`) or a
-language's own exception class. That is the cross-language contract this port is held to —
-identical placements for the same request — not a coincidence. The other examples print
+language's own exception class. That is the cross-language contract this port is held to:
+identical placements for the same request. The other examples print
 PHP values (`[0,1,180]` where Python prints `(0, 1, 180)`), so their text differs even
 where their answers agree.
 
-## What it does
+## What it covers
 
-- **Exact arithmetic.** Length is measured in ticks of 1/16000 mm and weight in 1/8 µg.
-  No coordinate is ever a float, so no placement decision depends on rounding.
-- **Real constraints.** Weight and payload limits, permitted rotations, keep-upright,
-  floor-only, non-stackable, top-load limits, minimum support ratio, tag incompatibility
-  and per-container tag limits, item-count limits, clearance, obstacles built from unions
-  of boxes, two-axle load limits, delivery stops and door access.
-- **Packaging that is not a rigid box.** Flat and gusseted bags, boxes cut to measure (with a
-  void-fill reserve if you ask for one), pallets a load may overhang by a stated margin, and
-  convex-hull items in all 24 orientations.
-- **A solver portfolio, not one algorithm.** Regular-grid, layer, extreme-point,
-  maximal-space and bounded exact search, selected by problem shape and profile.
-- **Answers you can check.** Every solution is re-validated by logic independent of the
-  search. Unplaced items come back with a reason code, not silently missing.
-- **A proof, or the distance to one.** Under every objective but `shipping_cost` and
-  `lowest_landed_cost`, every result states `optimality.lower_bound`. A complete result that
-  attains it reports `optimal`, which proves no packing obeying the request's rules scores
-  better; any other carries the gap to the bound (`gap_key`, `absolute_gap`, `relative_gap`).
-- **Deterministic.** The same input, seed and effort budget produce the same result, and
-  the result says when a clock, not the budget, stopped the search.
-- **Multi-container and nested.** Split across containers, or pack containers into
-  containers; `new NestedPacker(K)` carries the K best carton sets up a
-  level, so the pallet decides between them.
-- **Extensible.** Register your own constraints, item orderings, candidate scorers,
-  container selectors or complete solvers.
-- **Loading and unloading order.** `Packvium\Sequence` answers which placements a door can
+- Exact arithmetic. Length is measured in ticks of 1/16000 mm and weight in 1/8 µg, so no
+  coordinate is a float and no placement depends on rounding.
+- Constraints: weight and payload limits, permitted rotations, keep-upright, floor-only,
+  non-stackable, top-load limits, minimum support ratio, tag incompatibility and
+  per-container tag limits, item-count limits, clearance, obstacles built from unions of
+  boxes, two-axle load limits, delivery stops and door access.
+- Packaging that is not a rigid box: flat and gusseted bags, boxes cut to measure (with a
+  void-fill reserve if you ask for one), pallets a load may overhang by a stated margin,
+  and convex-hull items in all 24 orientations.
+- Several solvers, chosen by problem shape and profile: regular-grid, layer, extreme-point,
+  maximal-space and bounded exact search.
+- Every solution is re-validated by logic independent of the search. Unplaced items come
+  back with a reason code.
+- A proof, or the distance to one. Under every objective but `shipping_cost` and
+  `lowest_landed_cost`, every result states `optimality.lower_bound`. A complete result
+  that attains it reports `optimal`, which proves no packing obeying the request's rules
+  scores better; any other carries the gap to the bound (`gap_key`, `absolute_gap`,
+  `relative_gap`).
+- Deterministic. The same input, seed and effort budget produce the same result, and the
+  result says when a clock, not the budget, stopped the search.
+- Multi-container and nested packing. `new NestedPacker(K)` carries the K best carton sets
+  up a level, so the pallet decides between them.
+- Your own constraints, item orderings, candidate scorers, container selectors or complete
+  solvers, registered through `ExtensionRegistry`.
+- Loading and unloading order. `Packvium\Sequence` answers which placements a door can
   reach right now and gives a safe loading order, or an unloading order that empties each
   stop before the next.
-- **Work orders and portable artifacts.** `Packvium\Execution\Plan` turns a result into an
+- Work orders and portable artifacts. `Packvium\Execution\Plan` turns a result into an
   operator's step list. `Packvium\Artifacts\OperationalArtifact` wraps that plan with
-  geometry, display values and the request that produced it, and `ArtifactExports` writes it
-  as canonical JSON, CSV or a self-contained HTML work order, byte for byte what the Python,
-  Rust and JavaScript packages write.
-- **Items already in place, and replanning around them.** A request's `fixed_placements`
-  pins items to known positions before the solve: they keep their place, carry weight and
-  support, and come back marked `fixed: true`. Every placement carries a `placement_id` the
-  same in every engine, which a fixed placement or a lock may quote. `Packvium\Revisions\PlanRevision` records what
-  changed on the dock — a missing item, a substituted container, a lock, a verification — as
-  an append-only chain linked by SHA-256, and derives the request the next plan solves.
+  geometry, display values and the request that produced it, and `ArtifactExports` writes
+  it as canonical JSON, CSV or a self-contained HTML work order, byte for byte what the
+  Python, Rust and JavaScript packages write.
+- Items already in place, and replanning around them. A request's `fixed_placements` pins
+  items to known positions before the solve: they keep their place, carry weight and
+  support, and come back marked `fixed: true`. Every placement carries a `placement_id`,
+  the same in every engine, which a fixed placement or a lock may quote.
+  `Packvium\Revisions\PlanRevision` records what changed on the dock (a missing item, a
+  substituted container, a lock, a verification) as an append-only chain linked by
+  SHA-256, and derives the request the next plan solves.
+- Carrier quotes, shipping rules and catalog versions through `Packvium\Commerce`.
 
 ## Documentation
 
 | Document | Covers |
 | --- | --- |
-| [docs/GUARANTEES.md](https://github.com/toxakara/packvium-php/blob/main/docs/GUARANTEES.md) | What is promised and what is not. Start here. |
-| [docs/PUBLIC-API.md](https://github.com/toxakara/packvium-php/blob/main/docs/PUBLIC-API.md) | Inputs, outputs and status semantics. |
-| [docs/UNITS-AND-NUMERICS.md](https://github.com/toxakara/packvium-php/blob/main/docs/UNITS-AND-NUMERICS.md) | Units, accepted input forms, rounding policy. |
-| [docs/COMMERCE-API.md](https://github.com/toxakara/packvium-php/blob/main/docs/COMMERCE-API.md) | Carrier rating, policy evaluation and catalog versions. |
+| [docs/GUARANTEES.md](https://github.com/packvium/packvium-php/blob/main/docs/GUARANTEES.md) | What is promised and what is not. Start here. |
+| [docs/PUBLIC-API.md](https://github.com/packvium/packvium-php/blob/main/docs/PUBLIC-API.md) | Inputs, outputs and status semantics. |
+| [docs/UNITS-AND-NUMERICS.md](https://github.com/packvium/packvium-php/blob/main/docs/UNITS-AND-NUMERICS.md) | Units, accepted input forms, rounding policy. |
+| [docs/COMMERCE-API.md](https://github.com/packvium/packvium-php/blob/main/docs/COMMERCE-API.md) | Carrier rating, policy evaluation and catalog versions. |
+
+The constraint reference and the benchmarks are at [packvium.com](https://packvium.com).
 
 ## Requirements
 
-PHP 7.3 or newer. No extensions required — `bcmath` and `gmp` are deliberately not
+PHP 7.3 or newer. No extensions required: `bcmath` and `gmp` are deliberately not
 depended upon.
 
-One package name covers the whole range. It carries two source trees — the canonical
-PHP 8.2+ `src/` and `src-legacy/`, generated from it by a pinned AST downgrade — and
+One package name covers the whole range. It carries two source trees, the canonical
+PHP 8.2+ `src/` and `src-legacy/` generated from it by a pinned AST downgrade, and
 `autoload.php` selects one by `PHP_VERSION_ID` before Composer's PSR-4 map gets a chance
 to load the wrong one. PHP parses only what it loads. There is no wrapper, no second
 package and nothing to configure; namespaces, classes and results are identical either
@@ -313,7 +336,7 @@ way, and both trees are held to the same committed placement results on every su
 version.
 
 PHP 7.3, 7.4, 8.0 and 8.1 are end-of-life and receive no upstream security fixes. Packvium
-runs there so that an upgrade does not have to block your project — not so that it can be
+runs there so that an upgrade does not have to block your project, not so that it can be
 postponed.
 
 ### Older PHP (7.3 to 8.1)
@@ -325,7 +348,7 @@ other is how the downgraded tree represents enums.
   defaults you skip: `Item::create('book', $dimensions, '450 g', 4)`.
 - **Enums are strings.** Below 8.2 `PackingStatus`, `Rotation`, `SolverProfile`,
   `ShapeType` and `Rounding` are classes of string constants, so `$result->status` is the
-  string `'feasible'` itself — there is no `->value`. `Rotation::LWH` is the string `'LWH'`.
+  string `'feasible'` itself; there is no `->value`. `Rotation::LWH` is the string `'LWH'`.
 
 ```php
 $result = (new Packer(PackingConfig::balanced(60000)))->pack(
@@ -368,38 +391,35 @@ PHP are held to byte-identical canonical results; Rust and the JavaScript fallba
 to independent validity and a per-fixture objective floor.
 Pick the package for your stack; mixing them in one system is safe.
 
-Documentation, the constraint reference and the benchmarks are at
-[packvium.com](https://packvium.com).
-
 | Package | Install | Source |
 | --- | --- | --- |
-| Python — [`packvium`](https://pypi.org/project/packvium/) | `pip install packvium` | [packvium-python](https://github.com/toxakara/packvium-python) |
-| PHP — [`packvium/packvium`](https://packagist.org/packages/packvium/packvium) | `composer require packvium/packvium` | [packvium-php](https://github.com/toxakara/packvium-php) |
-| Rust — [`packvium`](https://crates.io/crates/packvium) | `packvium = "1.10"` | [packvium-rust](https://github.com/toxakara/packvium-rust) |
-| Node.js — [`@packvium/engine`](https://www.npmjs.com/package/@packvium/engine) | `npm install @packvium/engine` | [packvium-node](https://github.com/toxakara/packvium-node) |
-| Browser / WebAssembly — [`@packvium/browser`](https://www.npmjs.com/package/@packvium/browser) | `npm install @packvium/browser` | [packvium-wasm](https://github.com/toxakara/packvium-wasm) |
-| PHP FFI bridge — [`packvium/native-bridge`](https://packagist.org/packages/packvium/native-bridge) | `composer require packvium/native-bridge` | [packvium-php-bridge](https://github.com/toxakara/packvium-php-bridge) |
-| Python native selector — `packvium-native` | from source until the native wheels ship | [packvium-python-adapter](https://github.com/toxakara/packvium-python-adapter) |
+| Python — [`packvium`](https://pypi.org/project/packvium/) | `pip install packvium` | [packvium-python](https://github.com/packvium/packvium-python) |
+| PHP — [`packvium/packvium`](https://packagist.org/packages/packvium/packvium) | `composer require packvium/packvium` | [packvium-php](https://github.com/packvium/packvium-php) |
+| Rust — [`packvium`](https://crates.io/crates/packvium) | `packvium = "1.11"` | [packvium-rust](https://github.com/packvium/packvium-rust) |
+| Node.js — [`@packvium/engine`](https://www.npmjs.com/package/@packvium/engine) | `npm install @packvium/engine` | [packvium-node](https://github.com/packvium/packvium-node) |
+| Browser / WebAssembly — [`@packvium/browser`](https://www.npmjs.com/package/@packvium/browser) | `npm install @packvium/browser` | [packvium-wasm](https://github.com/packvium/packvium-wasm) |
+| PHP FFI bridge — [`packvium/native-bridge`](https://packagist.org/packages/packvium/native-bridge) | `composer require packvium/native-bridge` | [packvium-php-bridge](https://github.com/packvium/packvium-php-bridge) |
+| Python native selector — `packvium-native` | from source until the native wheels ship | [packvium-python-adapter](https://github.com/packvium/packvium-python-adapter) |
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/toxakara/packvium-php/blob/main/CONTRIBUTING.md).
+See [CONTRIBUTING.md](https://github.com/packvium/packvium-php/blob/main/CONTRIBUTING.md).
 Security reports go through the process in
-[SECURITY.md](https://github.com/toxakara/packvium-php/blob/main/SECURITY.md), not public
+[SECURITY.md](https://github.com/packvium/packvium-php/blob/main/SECURITY.md), not public
 issues.
 
 ## Citation
 
 If Packvium supports your research, cite it as software. GitHub's **Cite this repository**
-button reads [`CITATION.cff`](https://github.com/toxakara/packvium-php/blob/main/CITATION.cff), and
-[`codemeta.json`](https://github.com/toxakara/packvium-php/blob/main/codemeta.json) carries the same record in
+button reads [`CITATION.cff`](https://github.com/packvium/packvium-php/blob/main/CITATION.cff), and
+[`codemeta.json`](https://github.com/packvium/packvium-php/blob/main/codemeta.json) carries the same record in
 CodeMeta form.
 
 ```bibtex
 @software{packvium_php,
   author  = {{Packvium contributors}},
   title   = {Packvium for PHP},
-  version = {1.10.0},
+  version = {1.11.0},
   license = {MIT},
   url     = {https://packvium.com}
 }
@@ -407,4 +427,4 @@ CodeMeta form.
 
 ## License
 
-MIT. See [LICENSE](https://github.com/toxakara/packvium-php/blob/main/LICENSE).
+MIT. See [LICENSE](https://github.com/packvium/packvium-php/blob/main/LICENSE).

@@ -390,6 +390,26 @@ final class ValidationTest extends TestCase
         self::assertContains('group_split', $codes);
     }
 
+    public static function testNumericLookingGroupNamesAreReportedInCodePointOrder(): void
+    {
+        // "9" and "10" become integer array keys; the report must still order them as
+        // strings, as the other engines do.
+        $nine = self::item('a', options: ['quantity' => 2, 'group' => '9']);
+        $ten = self::item('b', options: ['quantity' => 2, 'group' => '10']);
+        $box = self::shelf(options: ['quantity' => 2]);
+        [$nineFirst, $nineSecond] = $nine->instances();
+        [$tenFirst, $tenSecond] = $ten->instances();
+        $report = (new IndependentSolutionValidator())->validate(new PackingRequest([$nine, $ten], [$box]), [
+            new PackedContainer($box, 1, [self::place($nineFirst), self::place($tenFirst, 100 * self::MM)]),
+            new PackedContainer($box, 2, [self::place($nineSecond), self::place($tenSecond, 100 * self::MM)]),
+        ], 0.0, null, []);
+        $splits = array_values(array_map(
+            static fn($issue): string => $issue->detail,
+            array_filter($report->issues, static fn($issue): bool => $issue->code === 'group_split'),
+        ));
+        self::assertSame(['10: shelf#1, shelf#2', '9: shelf#1, shelf#2'], $splits);
+    }
+
     // ------------------------------------------------------------- reported geometry
 
     public static function testARotationTheItemForbidsIsCaught(): void

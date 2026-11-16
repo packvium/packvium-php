@@ -226,6 +226,7 @@ final class RequestObjects
         if ($table->currency !== null) {
             RequestRules::rateTableCurrency($table->currency, "{$where}/currency", $currency);
         }
+        RequestRules::rateTableCeiling($table->pricesMinor, $table->minimumChargeMinor, $table->fuelSurchargePermille, $where);
     }
 
     /**

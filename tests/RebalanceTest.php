@@ -15,6 +15,7 @@ use Packvium\Domain\RateTable;
 use Packvium\Domain\Rotation;
 use Packvium\Domain\UnpackedItem;
 use Packvium\Domain\UnratedWeightException;
+use Packvium\Config\SolverProfile;
 use Packvium\Objective\UnknownObjectiveException;
 use Packvium\Validation\IndependentSolutionValidator;
 
@@ -464,5 +465,26 @@ final class RebalanceTest extends TestCase
                 self::assertNotSame($before, $after, "seed {$seed}: a move was recorded but nothing changed");
             }
         }
+    }
+
+    public static function testACompactLatticeResultIsRebalancedNotFataled(): void
+    {
+        // A compact lattice container carries no per-item placements; indexing them
+        // as if present used to fatal on `range(0, -1)`.
+        $cube = Support::item('cube', 100, 100, 100, ['quantity' => 25, 'weight' => '100 g']);
+        $boxType = Support::box('box', 300, 200, 100, ['quantity' => 10]);
+        $config = new PackingConfig(profile: SolverProfile::Fast, requirePlacementCoordinates: false);
+        $result = Support::pack([$cube], [$boxType], $config);
+        self::assertTrue(
+            array_filter($result->containers, static fn(PackedContainer $c): bool => $c->latticeSummary !== null) !== [],
+            'the fixture must produce a compact lattice container',
+        );
+
+        $outcome = WeightRebalancer::rebalance(new PackingRequest([$cube], [$boxType]), $result->containers, $result->unpacked, $config);
+
+        foreach ($outcome->containers as $container) {
+            self::assertNull($container->latticeSummary);
+        }
+        self::assertAccountingHolds(new PackingRequest([$cube], [$boxType]), $outcome->containers, $result->unpacked);
     }
 }
