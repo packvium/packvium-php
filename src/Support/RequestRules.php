@@ -3,6 +3,7 @@ declare(strict_types=1);
 namespace Packvium\Support;
 
 use Packvium\Domain\FlatBag;
+use Packvium\Domain\HullShape;
 use Packvium\Domain\MadeToMeasure;
 use Packvium\Domain\Orientations;
 use Packvium\Serialization\InvalidRequestException;
@@ -239,6 +240,7 @@ final class RequestRules
         self::optionalAllowedRotations($item, $where);
         self::optionalOneOf($item, 'ground_contact_rule', $where, self::GROUND_CONTACT_RULES);
         self::optionalOneOf($item, 'shape_type', $where, self::SHAPE_TYPES);
+        self::optionalHullVertexCount($item, $where);
         foreach (self::ITEM_BOOLEANS as $name) {
             self::optionalBoolean($item, $name, $where);
         }
@@ -251,6 +253,23 @@ final class RequestRules
                 }
             }
             throw self::refuse('invalid_value', "{$where}/allowed_rotations", 'must allow at least one rotation after keep_upright');
+        }
+    }
+
+    /**
+     * Only the count: the cap exists so no per-vertex work runs on an oversized hull. O(1).
+     *
+     * @param stdClass|array<array-key,mixed> $item
+     */
+    private static function optionalHullVertexCount($item, string $where): void
+    {
+        $vertices = JsonValue::get($item, 'hull_vertices');
+        if ($vertices === null) {
+            return;
+        }
+        $field = "{$where}/hull_vertices";
+        if (\count(self::listAt($vertices, $field)) > HullShape::MAXIMUM_VERTICES) {
+            throw self::refuse('above_maximum', $field, 'must have at most ' . HullShape::MAXIMUM_VERTICES . ' vertices');
         }
     }
 
@@ -552,6 +571,30 @@ final class RequestRules
         \usort($members, static fn(array $left, array $right): int => \strcmp($left[0], $right[0]));
         foreach ($members as [$tag, $limit]) {
             self::integer($limit, self::pointer($where, $tag), 1);
+        }
+    }
+
+    /**
+     * The dearest bracket's landed cost, fuel surcharge included, must stay an exact integer
+     * (M1): `base = max(dearest price, minimum charge)`, `landed = base + ceil(base * permille / 1000)`,
+     * in decimal-string arithmetic because the product of two values near 2^53 passes PHP_INT_MAX.
+     * A table with no prices is left to the rules that refuse it. O(p) for p prices.
+     *
+     * @param list<int> $prices every field already passed its own check
+     */
+    public static function rateTableCeiling(array $prices, int $minimumCharge, int $fuelSurchargePermille, string $where): void
+    {
+        if ($prices === []) {
+            return;
+        }
+        $base = (string) \max(\max($prices), $minimumCharge);
+        $product = BigInt::multiply($base, (string) $fuelSurchargePermille);
+        $quotient = BigInt::divide($product, '1000');
+        $exact = BigInt::compare(BigInt::multiply($quotient, '1000'), $product) === 0;
+        $landed = BigInt::add($base, $exact ? $quotient : BigInt::add($quotient, '1'));
+        if (BigInt::compare($landed, CanonicalJson::MAX_EXACT_MAGNITUDE) > 0) {
+            throw self::refuse('above_maximum', $where, 'must price its top bracket at most '
+                . CanonicalJson::MAX_EXACT_MAGNITUDE . ' minor units with the fuel surcharge');
         }
     }
 

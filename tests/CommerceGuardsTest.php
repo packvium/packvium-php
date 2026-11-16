@@ -383,4 +383,23 @@ final class CommerceGuardsTest extends TestCase
         self::assertSame(63, $registry->resolve(100, asOf: 0)->number);
     }
 
+
+    public static function testTariffZonesAreValidatedInCodePointOrderOfTheirKeys(): void
+    {
+        // PHP turns the numeric-looking key "2" into an int; "2" still sorts before "b" as a string.
+        foreach ([['b' => 'x', '2' => 'x'], ['2' => 'x', 'b' => 'x']] as $zones) {
+            $document = self::document();
+            $document['tariffs'][0]['versions'][0]['cost_per_dimensional_kg_minor'] = $zones;
+            try {
+                quote($document, ['carrier_id' => 'acme', 'service_id' => 'ground', 'tariff_version' => 1,
+                    'zone' => 'b', 'actual_weight_g' => 1, 'volume_mm3' => 1]);
+                self::assertTrue(false, 'a non-integer zone cost must be refused');
+            } catch (CommerceInputException $error) {
+                self::assertTrue(
+                    str_contains($error->getMessage(), 'cost_per_dimensional_kg_minor[2]'),
+                    'the first error names zone "2": ' . $error->getMessage(),
+                );
+            }
+        }
+    }
 }

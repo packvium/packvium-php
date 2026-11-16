@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Domain;
 
+use Packvium\Support\Arithmetic;
 use Packvium\Support\ObjectRefusal;
 
 /**
@@ -107,8 +108,8 @@ final class RateTable
                 $base = max($this->pricesMinor[$index], $this->minimumChargeMinor);
                 // Ceiling division, never a float: the surcharge is a share of the base,
                 // and rounding down would let a fractional unit of revenue vanish.
-                $surcharge = intdiv($base * $this->fuelSurchargePermille + 999, 1000);
-                return $base + $surcharge;
+                $surcharge = Arithmetic::mulDivCeil($base, $this->fuelSurchargePermille, 1000);
+                return Arithmetic::addNonNegative($base, $surcharge);
             }
         }
         return null;

@@ -87,7 +87,15 @@ final class WeightRebalancer
         }
         $validator = new IndependentSolutionValidator();
         $deadline = Deadline::ofMilliseconds($timeLimitMs);
-        $working = array_values($containers);
+        // A compact lattice container carries no per-item placements; the pass below
+        // reads and moves individual placements, so expand it the way Packer does
+        // before validation.
+        $working = array_map(
+            static fn(PackedContainer $c): PackedContainer => $c->latticeSummary !== null
+                ? new PackedContainer($c->container, $c->sequence, $c->expandPlacements())
+                : $c,
+            array_values($containers),
+        );
         $moves = [];
 
         for ($round = 0; $round < $maxMoves; $round++) {
@@ -102,7 +110,8 @@ final class WeightRebalancer
             $sourceIndex = self::argMax($weights);
             $source = $working[$sourceIndex];
 
-            $rankedItems = range(0, count($source->placements) - 1);
+            // Not `range(0, count - 1)`: for an empty container PHP's range counts down to [0, -1].
+            $rankedItems = $source->placements === [] ? [] : range(0, count($source->placements) - 1);
             usort($rankedItems, static fn(int $a, int $b): int =>
                 ($source->placements[$b]->instance->weight()->ticks <=> $source->placements[$a]->instance->weight()->ticks)
                 ?: ($a <=> $b));
@@ -157,7 +166,8 @@ final class WeightRebalancer
             $working = $trial;
         }
 
-        return new RebalanceResult($working, $moves);
+        // Nothing moved: hand back the containers as given, compact ones still compact.
+        return new RebalanceResult($moves === [] ? array_values($containers) : $working, $moves);
     }
 
     /**

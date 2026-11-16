@@ -20,11 +20,13 @@ use Packvium\Unit\Length;
 final class PalletOverhang
 {
     /**
-     * The container every solver packs: itself without a limit, else the widened frame carrying
-     * its deck. The frame states no limit, so a second call returns it unchanged. O(1).
+     * The container every solver packs: a standing bag turned to its W x H x L frame,
+     * a pallet with a limit widened to the frame carrying its deck, else itself. A frame is
+     * marked as one, so a second call returns it unchanged. O(1).
      */
     public static function solvingFrame(Container $container):Container
     {
+        if($container->bagOrientation===FlatBag::STANDING&&!$container->uprightFrame)return $container->upright();
         $limit=$container->palletOverhangLimit;
         if($limit===null)return $container;
         $inner=$container->innerDimensions;

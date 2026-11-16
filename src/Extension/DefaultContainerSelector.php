@@ -5,6 +5,7 @@ use Packvium\Algorithm\SingleContainerSolution;
 use Packvium\Domain\Container;
 use Packvium\Domain\Nesting;
 use Packvium\Support\BigInt;
+use Packvium\Support\StableSorter;
 /** Prefers the container that holds the most items, then the cheapest, then the tightest. */
 final class DefaultContainerSelector implements ContainerSelector
 {
@@ -12,6 +13,6 @@ final class DefaultContainerSelector implements ContainerSelector
     {
         $used=$s->state->latticeSummary!==null?$s->state->latticeSummary->usedVolumeString():Nesting::usedVolume($s->state->placements);
         $leftover=BigInt::chunks(BigInt::subtract($c->innerDimensions->volumeString(),$used));
-        return [-$s->state->placementCount(),$c->costMinor,...$leftover,$c->id];
+        return [-$s->state->placementCount(),$c->costMinor,...$leftover,StableSorter::textKey($c->id)];
     }
 }

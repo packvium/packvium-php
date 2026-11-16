@@ -61,7 +61,7 @@ final readonly class PolicyRuleSet
         // Ties go to the lexicographically smallest id -- never to array insertion
         // order, which would follow the order the caller happened to write.
         usort($resolved, static fn(PolicyRule $a, PolicyRule $b): int
-            => ($b->priority <=> $a->priority) ?: ($a->id <=> $b->id));
+            => ($b->priority <=> $a->priority) ?: strcmp($a->id, $b->id));
         return $resolved;
     }
 

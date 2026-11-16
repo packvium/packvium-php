@@ -54,6 +54,8 @@ final class RequestObjectsTest extends TestCase
                 static function (array &$r): void { $r['containers'][0]['tag_limits'] = ['fragile' => self::TOO_LARGE]; }],
             'rate table price past 2^53 - 1' => [self::packed(null, [self::box(rateTable: new RateTable([1000], [self::TOO_LARGE]))]),
                 static function (array &$r): void { $r['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000], 'prices_minor' => [self::TOO_LARGE]]; }],
+            'rate table landed cost past 2^53 - 1' => [self::packed(null, [self::box(rateTable: new RateTable([1000], [9007199254740991], fuelSurchargePermille: 2000))]),
+                static function (array &$r): void { $r['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000], 'prices_minor' => [9007199254740991], 'fuel_surcharge_permille' => 2000]; }],
             'time limit past 2^53 - 1' => [self::packed(null, null, PackingConfig::fast(self::TOO_LARGE)),
                 static function (array &$r): void { $r['configuration']['time_limit_ms'] = self::TOO_LARGE; }],
             'effort limit past 2^53 - 1' => [self::packed(null, null, new PackingConfig(SolverProfile::Fast, effortBudget: new EffortBudget(maxRestarts: self::TOO_LARGE))),
@@ -72,6 +74,15 @@ final class RequestObjectsTest extends TestCase
             self::assertSame(self::identity($fromJson), self::identity($fromObjects), $name);
             self::assertSame($fromJson->getMessage(), $fromObjects->getMessage(), $name);
         }
+    }
+
+    public static function testARateTableLandedCostIsRefusedOnTheObjectPathWithTheContractMessage(): void
+    {
+        $table = new RateTable([1000], [9007199254740991], fuelSurchargePermille: 2000);
+        $error = self::refusal(self::packed(null, [self::box(rateTable: $table)]), 'surcharged table');
+        self::assertSame(['above_maximum', '/containers/0/rate_table',
+            'invalid_request: /containers/0/rate_table: must price its top bracket at most 9007199254740991 minor units with the fuel surcharge'],
+            [$error->reason(), $error->field(), $error->getMessage()]);
     }
 
     public static function testAnObjectRefusesWithTheJsonReasonAndNoField(): void

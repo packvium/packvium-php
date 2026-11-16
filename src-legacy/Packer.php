@@ -66,7 +66,7 @@ final class Packer
             return null;
         }
         return ObjectiveBounds::forRequest($request->instances(), $request->containers,
-            $this->config->objective);
+            $this->config->objective, $this->config);
     }
 
     /**
@@ -118,12 +118,13 @@ final class Packer
      */
     private function solve(array $items, array $containers, array $fixedPlacements, ?string $currency = null): PackingResult
     {
-        // A pallet with an overhang limit is packed as its widened frame from here on, so no
-        // solver, bound or validator needs to know the limit exists.
-        // A container without a limit is its own frame; asking only for one with a limit keeps
-        // `PalletOverhang` uncompiled on every other request, whose heap pays for its code.
+        // A pallet with an overhang limit is packed as its widened frame from here on, and a
+        // standing bag as its turned one, so no solver, bound or validator needs to know the
+        // limit or the orientation exists.
+        // Any other container is its own frame; asking only for one with a limit or standing
+        // keeps `PalletOverhang` uncompiled on every other request, whose heap pays for its code.
         $request = new PackingRequest($items, \array_map(static function (Container $container): Container {
-            return $container->palletOverhangLimit === null ? $container : PalletOverhang::solvingFrame($container);
+            return $container->palletOverhangLimit === null && $container->bagOrientation === 'flat' ? $container : PalletOverhang::solvingFrame($container);
         }, $containers), $fixedPlacements, $currency);
         // Both cost objectives price the same billed weight, so both need the divisor.
         // There is no library-chosen default: a wrong guess would silently misprice

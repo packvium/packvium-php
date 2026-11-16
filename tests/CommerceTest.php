@@ -114,6 +114,100 @@ final class CommerceTest extends TestCase
         );
     }
 
+    public static function testAQuoteBeyondTheIntegerRangeIsRefusedNotWrapped(): void
+    {
+        // weight = rate = 2^53 - 1 at divisor 1: the base charge is about 8e28 minor units.
+        $document = self::minimalDocument();
+        $version = &$document['tariffs'][0]['versions'][0];
+        $version['dimensional_weight_divisor'] = 1;
+        $version['cost_per_dimensional_kg_minor'] = ['zone-a' => 9007199254740991];
+        self::assertThrows(
+            CommerceInputException::class,
+            static fn() => quote($document, self::shipment(['actual_weight_g' => 9007199254740991])),
+            'an unrepresentable quote must be a typed refusal, not a TypeError or a float',
+        );
+        self::assertQuoteRefusedWith(
+            'quote amount 81129638414606663681390495663 is above 9007199254740991 and cannot be represented exactly',
+            $document,
+            self::shipment(['actual_weight_g' => 9007199254740991]),
+        );
+    }
+
+    public static function testAnAmountAtTheCeilingIsQuotedExactly(): void
+    {
+        $document = self::tariffDocument(minimumCharge: 9007199254740991);
+        $quote = quote($document, self::shipment(['actual_weight_g' => 1, 'volume_mm3' => 1]))['quote'];
+        self::assertSame(9007199254740991, $quote['base_charge_minor']);
+        self::assertSame(9007199254740991, $quote['total_minor']);
+    }
+
+    public static function testABaseChargeAboveTheCeilingIsRefused(): void
+    {
+        // Past 2^53 - 1 but inside PHP_INT_MAX: PHP used to answer it.
+        self::assertQuoteRefusedWith(
+            'quote amount 9007199254740992 is above 9007199254740991 and cannot be represented exactly',
+            self::tariffDocument(minimumCharge: 9007199254740992),
+            self::shipment(['actual_weight_g' => 1, 'volume_mm3' => 1]),
+        );
+    }
+
+    public static function testAFuelSurchargeAboveTheCeilingIsRefusedWhileTheBaseIsInside(): void
+    {
+        self::assertQuoteRefusedWith(
+            'quote amount 12000000000000000 is above 9007199254740991 and cannot be represented exactly',
+            self::tariffDocument(minimumCharge: 6000000000000000, fuelPermille: 2000),
+            self::shipment(['actual_weight_g' => 1, 'volume_mm3' => 1]),
+        );
+    }
+
+    public static function testAnAccessorialAboveTheCeilingIsRefusedWhileTheBaseIsInside(): void
+    {
+        self::assertQuoteRefusedWith(
+            'quote amount 12000000000000000 is above 9007199254740991 and cannot be represented exactly',
+            self::tariffDocument(minimumCharge: 6000000000000000, accessorialPermille: 2000),
+            self::shipment(['actual_weight_g' => 1, 'volume_mm3' => 1, 'requested_accessorials' => ['liftgate']]),
+        );
+    }
+
+    public static function testATotalAboveTheCeilingIsRefusedWhileEveryComponentIsInside(): void
+    {
+        self::assertQuoteRefusedWith(
+            'quote amount 9600000000000000 is above 9007199254740991 and cannot be represented exactly',
+            self::tariffDocument(minimumCharge: 4800000000000000, fuelPermille: 1000),
+            self::shipment(['actual_weight_g' => 1, 'volume_mm3' => 1]),
+        );
+    }
+
+    /**
+     * @param array<string,mixed> $document
+     * @param array<string,mixed> $request
+     */
+    private static function assertQuoteRefusedWith(string $message, array $document, array $request): void
+    {
+        try {
+            quote($document, $request);
+        } catch (CommerceInputException $error) {
+            self::assertSame($message, $error->getMessage());
+            return;
+        }
+        self::assertTrue(false, 'the quote must be refused');
+    }
+
+    /** @return array<string,mixed> */
+    private static function tariffDocument(int $minimumCharge, int $fuelPermille = 0, ?int $accessorialPermille = null): array
+    {
+        $accessorial = $accessorialPermille === null
+            ? ['flat_charge_minor' => 0] : ['permille_of_base' => $accessorialPermille];
+        return ['tariffs' => [['carrier_id' => 'acme', 'service_id' => 'ground', 'versions' => [[
+            'effective_at' => 0,
+            'dimensional_weight_divisor' => 5000,
+            'cost_per_dimensional_kg_minor' => ['zone-a' => 1],
+            'minimum_charge_minor' => $minimumCharge,
+            'fuel_surcharge_permille' => $fuelPermille,
+            'accessorials' => [['accessorial_id' => 'liftgate'] + $accessorial],
+        ]]]]];
+    }
+
     public static function testAnUnpriceableZoneIsAnAnswerNotAnException(): void
     {
         $result = quote(self::minimalDocument(), self::shipment(['zone' => 'zone-nowhere']));

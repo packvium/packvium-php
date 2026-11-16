@@ -54,6 +54,30 @@ final class StockCutIndexTest extends TestCase
         }
     }
 
+    public static function testCutBoxPricedPastTheExactIntegerCeilingIsRefused(): void
+    {
+        $sides = ['length' => '10', 'width' => '10', 'height' => '10'];
+        $request = ['items' => [['id' => 'cube', 'dimensions' => $sides]], 'containers' => [
+            ['id' => 'machine', 'inner_dimensions' => $sides, 'made_to_measure' => ['minimum' => $sides, 'increment' => $sides, 'cost_per_square_metre_minor' => 9007199254740991]],
+        ]];
+        $artifact = OperationalArtifact::build($request, ArrayCodec::pack($request));
+        $request['fixed_placements'] = [['container_type' => 'machine']];
+        // 600 mm^2 of surface is far below a square metre, so the price stays inside the ceiling.
+        self::assertTrue(PlanRevision::stockCutBoxes($request, $artifact, 1)->containers[1]->cost_minor <= 9007199254740991);
+        // The same rate on a cut box of 2000 mm per side is 24 m^2 and passes it.
+        $cut = $artifact;
+        foreach (['length', 'width', 'height'] as $axis) {
+            $cut['geometry']['containers'][0]['inner_dimensions'][$axis] = (string) (2000 * 16000);
+        }
+        try {
+            PlanRevision::stockCutBoxes($request, $cut, 1);
+            self::assertTrue(false, 'a cut box priced past 2^53 - 1 was accepted');
+        } catch (PlanRevisionException $error) {
+            self::assertSame('invalid_revision', $error->errorCode());
+            self::assertSame("a made-to-measure container's cost_per_square_metre_minor prices the largest box above 9007199254740991", $error->getMessage());
+        }
+    }
+
     public static function testStockingKeepsFirstLockOrder(): void
     {
         $fixed = $orders = $shapes = [];

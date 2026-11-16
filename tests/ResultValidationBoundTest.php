@@ -6,6 +6,8 @@ namespace Packvium\Tests;
 use Packvium\Serialization\ArrayCodec;
 use Packvium\Support\ResultValidation\Bound;
 use Packvium\Support\ResultValidation\Exact;
+use Packvium\Support\ResultValidation\Spec;
+use Packvium\Support\ResultValidation\Units;
 use Packvium\Validation\ResultIssue;
 
 use function Packvium\Validation\validate;
@@ -82,6 +84,109 @@ final class ResultValidationBoundTest extends TestCase
             ++$compared;
         }
         self::assertGreaterThan(400, $compared);
+    }
+
+    /**
+     * The scene's billed cases, each container's `tare`, `dimensional` and priced
+     * `brackets` read as this copy's billing records.
+     */
+    public static function testTheBilledKeyMatchesEveryBilledCaseOfTheSharedScene(): void
+    {
+        $path = \dirname(__DIR__, 2) . '/conformance/scene/objective-bounds.json';
+        if (!\is_file($path)) {
+            self::skip('the shared cross-language scene fixture is not part of this package');
+        }
+        $scene = \json_decode((string)\file_get_contents($path), true);
+        self::assertGreaterThan(14, \count($scene['billed']));
+        foreach ($scene['billed'] as $case) {
+            $containers = \array_map(static function (array $container): array {
+                return [
+                    'inner_volume' => self::integer($container['inner']),
+                    'base_area' => self::integer($container['base_area']),
+                    'height' => self::integer($container['height']),
+                    'usable' => self::integer($container['usable']),
+                    'cost_minor' => self::integer($container['cost_minor']),
+                    'payload' => $container['payload'],
+                    'max_items' => $container['max_items'],
+                    'quantity' => $container['quantity'],
+                ];
+            }, $case['containers']);
+            $billing = \array_map(static function (array $container): array {
+                return [
+                    'floor' => Exact::max(self::integer($container['tare']), self::integer($container['dimensional'])),
+                    'tare' => self::integer($container['tare']),
+                    'brackets' => \array_map(static function (array $bracket): array {
+                        return [self::integer($bracket[0]), $bracket[1]];
+                    }, $container['brackets']),
+                ];
+            }, $case['containers']);
+            $shrinks = \in_array(true, \array_column($case['instances'], 'shrinks'), true);
+            [$stated] = Bound::objectiveBound(self::runs($case['instances'], 'volume'), self::runs($case['instances'], 'weight'),
+                self::runs($case['instances'], 'value'), $shrinks, $containers, $case['objective'], $billing);
+            self::assertSame($case['vector'], $stated, "{$case['objective']} diverges from the oracle on {$case['fixture']}");
+        }
+    }
+
+    /**
+     * The reason `stated` gives for one request read as a feasible result would be.
+     *
+     * @param array<string,mixed> $request
+     */
+    private static function withheldReason(array $request): string
+    {
+        $unit = Units::lengthUnit($request);
+        $stated = new \ReflectionMethod(Bound::class, 'stated');
+        return $stated->invoke(null, $request, 'feasible', Spec::items($request, $unit), Spec::containers($request, $unit))[1];
+    }
+
+    /**: nothing can price the one type, a billed request with no divisor, an unknown objective. */
+    public static function testALandedRequestNothingCanPriceStatesNoBoundInTheValidator(): void
+    {
+        $request = [
+            'items' => [['id' => 'brick', 'weight' => '100 g', 'dimensions' => ['length' => '100', 'width' => '100', 'height' => '100']]],
+            'containers' => [['id' => 'bulky', 'inner_dimensions' => ['length' => '500', 'width' => '500', 'height' => '500'],
+                'rate_table' => ['weight_brackets_g' => [1000], 'prices_minor' => [10]]]],
+            'configuration' => ['objective' => 'lowest_landed_cost', 'dimensional_weight_divisor' => 5000,
+                'dimensional_weight_length_unit' => 'cm', 'dimensional_weight_weight_unit' => 'kg'],
+        ];
+        $unpriced = 'no priceable inventory carries a packing that attains the count bound';
+        self::assertSame($unpriced, self::withheldReason($request));
+        self::assertSame($unpriced, self::withheldReason(['configuration' => ['objective' => 'shipping_cost']] + $request));
+        self::assertSame("objective 'custom' has no bound", self::withheldReason(['configuration' => ['objective' => 'custom']] + $request));
+    }
+
+    /** The billing helpers' edges: nothing to cover, an uncoverable need, a short inventory, a ragged table. */
+    public static function testTheValidatorBillingHelpersCoverTheirEdges(): void
+    {
+        $method = static function (string $name): \ReflectionMethod { return new \ReflectionMethod(Bound::class, $name); };
+        $cover = $method('fractionalCover');
+        self::assertSame(0, $cover->invoke(null, [], 0));
+        self::assertNull($cover->invoke(null, [[10, 3, 1]], 7));
+        self::assertSame(10 + 16, $cover->invoke(null, [[10, 3, 1], [4, 1, null]], 7));
+        self::assertNull($method('leastOfInventory')->invoke(null, [5], [1], 2));
+        $type = ['usable' => 10, 'payload' => null, 'max_items' => null, 'quantity' => 1];
+        $billing = [['floor' => 5, 'tare' => 0, 'brackets' => []]];
+        self::assertNull($method('billedTerm')->invoke(null, 'shipping_cost', $billing, [[1, 2]], [[1, 2]], false, [$type], [0, 2, 0, 0, 0]));
+        self::assertSame([[1000 * Units::TICKS_PER_GRAM, 5]],
+            $method('brackets')->invoke(null, ['weight_brackets_g' => [1000, 2000], 'prices_minor' => [5]]));
+    }
+
+    /**
+     * The validator's own billed term agrees with what the engine states, and a bound
+     * moved by one is caught.
+     */
+    public static function testABilledObjectiveStatesTheBoundTheValidatorRecomputes(): void
+    {
+        $request = self::REQUEST + ['configuration' => [
+            'objective' => 'shipping_cost', 'dimensional_weight_divisor' => 5000,
+            'dimensional_weight_length_unit' => 'cm', 'dimensional_weight_weight_unit' => 'kg',
+        ]];
+        $result = ArrayCodec::pack($request);
+        self::assertSame([], validate($request, $result));
+        --$result['optimality']['lower_bound'][1];
+        self::assertSame(['optimality_bound_mismatch'], \array_map(static function (ResultIssue $issue): string {
+            return $issue->code;
+        }, validate($request, $result)));
     }
 
     public static function testANegativeOrUnlimitedCapacityAndZeroVolumesAreReadAsTheReferenceReadsThem(): void

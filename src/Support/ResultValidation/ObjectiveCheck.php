@@ -147,7 +147,7 @@ final class ObjectiveCheck
     }
 
     /** `floor(volume * weight ticks per unit / (length ticks per unit ^ 3 * divisor))`. @param array<int,int|string> $size @return int|string */
-    private static function dimensionalWeight(array $size, int $divisor, string $lengthUnit, string $weightUnit)
+    public static function dimensionalWeight(array $size, int $divisor, string $lengthUnit, string $weightUnit)
     {
         $length = Units::perUnit(Units::LENGTH, $lengthUnit);
         $weight = Units::perUnit(Units::WEIGHT, $weightUnit);

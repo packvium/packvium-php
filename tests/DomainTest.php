@@ -302,4 +302,14 @@ final class DomainTest extends TestCase
         self::assertSame(900, $table->chargeMinor(50));
         self::assertSame(500, $table->chargeMinor(150));
     }
+
+    public static function testALandedCostBeyondTheIntegerRangeIsRefusedNotFloated(): void
+    {
+        // The surcharge product and the sum used to pass PHP_INT_MAX and become a float.
+        $surcharged = new RateTable([100], [PHP_INT_MAX], fuelSurchargePermille: 1000);
+        self::assertThrows(InvalidArgumentException::class, static fn() => $surcharged->chargeMinorOrNull(50));
+        $wide = new RateTable([100], [PHP_INT_MAX - 1], fuelSurchargePermille: 1);
+        self::assertThrows(InvalidArgumentException::class, static fn() => $wide->chargeMinor(50));
+        self::assertSame(1_001, (new RateTable([100], [1_000], fuelSurchargePermille: 1))->chargeMinor(50));
+    }
 }

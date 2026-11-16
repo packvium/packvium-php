@@ -66,6 +66,7 @@ final class RequestObjectsCorpusTest extends TestCase
         'container-made-to-measure-not-object' => 'a machine that is not an object is not a MadeToMeasure',
         'container-deformable-boundary-not-object' => 'the object holds the bag\'s kind, not a block',
         'container-deformable-boundary-kind-missing' => 'the object holds the bag\'s kind, not a block',
+        'item-hull-vertices-not-list' => 'ArrayCodec::hullVertices takes a list, not a number',
         'item-id-missing' => 'Item requires an id',
         'item-dimensions-missing' => 'Item requires dimensions',
         'item-side-missing' => 'Dimensions requires all three sides',
@@ -98,6 +99,9 @@ final class RequestObjectsCorpusTest extends TestCase
         'item-accepts-stacking-groups-not-list' => self::TYPED,
         'item-side-boolean' => self::TYPED,
         'container-gusseted-bag-side-gusset-depth-boolean' => self::TYPED,
+        'container-gusseted-bag-bottom-gusset-depth-boolean' => self::TYPED,
+        'container-flat-bag-orientation' => '`bagOrientation` defaults to flat, so a flat bag that names it '
+            . 'cannot be told apart from one that does not',
         'item-side-fraction' => self::TYPED,
         'item-stacking-group-number' => self::TYPED,
         'fixed-position-unparsable' => 'a Point holds integer ticks, not text',
@@ -108,6 +112,8 @@ final class RequestObjectsCorpusTest extends TestCase
         'item-side-beyond-native-integers' => self::TYPED,
         'item-side-vast-mixed-fraction' => self::TYPED,
         'item-side-vast-with-a-unit-suffix' => self::TYPED,
+        'item-side-5000-digits' => self::TYPED,
+        'item-side-5000-digit-numerator' => self::TYPED,
         'obstacle-additional-boxes-not-list' => 'an Obstacle holds its additional boxes as a list',
         'fixed_placements.position.x="-1"' => self::NEGATIVE_POSITION,
         'fixed_placements.position.x=-1' => self::NEGATIVE_POSITION,
@@ -203,7 +209,7 @@ final class RequestObjectsCorpusTest extends TestCase
     ];
 
     /** Pinned, so the skip set cannot grow without this line changing too. */
-    private const SKIPPED = 148;
+    private const SKIPPED = 153;
 
     public static function testTheSkipSetIsPinnedAndNamesOnlyCorpusCases(): void
     {

@@ -124,11 +124,41 @@ final class ContainerCheck
         if (!self::matches($stated, [$a, $b, $c])) {
             $issues[] = new ResultIssue('achieved_dimensions_mismatch', "{$packedId}: reported " . self::optionalTuple($stated) . ', computed ' . PyFormat::intTuple([$a, $b, $c]));
         }
-        if ($spec->flatBag && (Exact::compare(Exact::add($a, $c), $spec->inner[0]) > 0 || Exact::compare(Exact::add($b, $c), Exact::add($spec->inner[1], $spec->sideGusset)) > 0)) {
-            $gusset = Exact::sign($spec->sideGusset) === 0 ? '' : ", side gusset {$spec->sideGusset}";
-            $issues[] = new ResultIssue('bag_girth_exceeded', "{$packedId}: a + c = " . Exact::add($a, $c) . ', b + c = ' . Exact::add($b, $c) . ", flat size {$spec->inner[0]} x {$spec->inner[1]}{$gusset}");
+        $breach = $spec->flatBag ? self::girthBreach($spec, $a, $b, $c) : null;
+        if ($breach !== null) {
+            $issues[] = new ResultIssue('bag_girth_exceeded', "{$packedId}: {$breach}");
         }
         $packedId->verify();
+    }
+
+    /**
+     * How a bag's package of extents (a, b, c) breaks a loop of film, or null.
+     *
+     * Lying flat on an L x W bag: 2(a + c) <= 2L + K and b + c <= W + G. Standing in its
+     * W x H x L frame: 2(b + c) <= 2L + K and a + b <= W + G (1.10). G and K
+     * are the side and bottom gussets, 0 where none is declared.
+     *
+     * @param int|string $a @param int|string $b @param int|string $c
+     */
+    public static function girthBreach(ContainerSpec $spec, $a, $b, $c): ?string
+    {
+        if ($spec->standing) {
+            [$width, $length] = [$spec->inner[0], $spec->inner[2]];
+            [$along, $across] = [Exact::add($b, $c), Exact::add($a, $b)];
+        } else {
+            [$length, $width] = [$spec->inner[0], $spec->inner[1]];
+            [$along, $across] = [Exact::add($a, $c), Exact::add($b, $c)];
+        }
+        $alongLimit = Exact::add(Exact::add($length, $length), $spec->bottomGusset);
+        if (Exact::compare(Exact::add($along, $along), $alongLimit) <= 0
+            && Exact::compare($across, Exact::add($width, $spec->sideGusset)) <= 0) {
+            return null;
+        }
+        $sums = $spec->standing
+            ? "b + c = {$along}, a + b = {$across}, standing, length {$length}, width {$width}"
+            : "a + c = {$along}, b + c = {$across}, flat size {$length} x {$width}";
+        return $sums . (Exact::sign($spec->sideGusset) === 0 ? '' : ", side gusset {$spec->sideGusset}")
+            . (Exact::sign($spec->bottomGusset) === 0 ? '' : ", bottom gusset {$spec->bottomGusset}");
     }
 
     /** @param list<mixed>|null $stated @param list<int|string> $expected */

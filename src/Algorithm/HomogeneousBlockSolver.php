@@ -141,7 +141,7 @@ final class HomogeneousBlockSolver implements SingleContainerSolver
         if($order===0){
             $mine=$candidate['space']->origin;$theirs=$best['space']->origin;
             $order=($mine->z<=>$theirs->z)?:($mine->y<=>$theirs->y)?:($mine->x<=>$theirs->x)
-                ?:($candidate['itemId']<=>$best['itemId'])?:($candidate['rotationName']<=>$best['rotationName'])
+                ?:strcmp((string)$candidate['itemId'],(string)$best['itemId'])?:($candidate['rotationName']<=>$best['rotationName'])
                 ?:($candidate['nx']<=>$best['nx'])?:($candidate['ny']<=>$best['ny'])?:($candidate['nz']<=>$best['nz']);
         }
         return $order<0;

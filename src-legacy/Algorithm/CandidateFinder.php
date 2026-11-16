@@ -86,12 +86,16 @@ final class CandidateFinder
         }
         $inner=$container->innerDimensions;
         $limitX=$inner->length->ticks;$limitY=$inner->width->ticks;$limitZ=$inner->height->ticks;
-        // A bag also needs a + c <= L and b + c <= W + G over the running extents grown by
-        // the candidate (G is a gusseted bag's side gusset, 0 for a flat one): O(1),
-        // and the extents only grow, so no verdict flips. W + G is summed once per call.
-        $bag=$container->isFlatBag();
+        // A bag also needs both loops of film round the running extents grown by the
+        // candidate: lying flat 2(a + c) <= 2L + K and b + c <= W + G, standing
+        // 2(b + c) <= 2L + K and a + b <= W + G (1.10 side gussets, bottom
+        // gussets; `Girth`). O(1), and the extents only grow, so no verdict flips. Both limits
+        // are summed once per call.
+        $girth=$container->girth();
+        $bag=$girth!==null;
         $bagX=$state->maxX;$bagY=$state->maxY;$bagZ=$state->maxZ;
-        $girthY=$limitY+$container->sideGussetTicks();
+        $along=$bag?$girth->alongLimit:0;$across=$bag?$girth->acrossLimit:0;
+        $standing=$bag&&$container->uprightFrame;
         $clearance=$config->clearance->ticks;
         // Envelope and extents depend only on the rotation, so they are built once
         // instead of once per (point, rotation) pair.
@@ -136,7 +140,7 @@ final class CandidateFinder
             $state,$container,$item,$forms,$placed,$stackSensitive,$routeSensitive,
             $bounds,$hullShapes,$index,$nesting,$reserveCheck,$usable,$compressionSensitive,
             $active,$inertChain,$inertSupportChecks,$defaultScorer,$scorer,
-            $limitX,$limitY,$limitZ,$bag,$bagX,$bagY,$bagZ,$girthY,$clearance,
+            $limitX,$limitY,$limitZ,$bag,$bagX,$bagY,$bagZ,$along,$across,$standing,$clearance,
         ];
     }
 
@@ -151,7 +155,7 @@ final class CandidateFinder
             $state,$container,$item,$forms,$placed,$stackSensitive,$routeSensitive,
             $bounds,$hullShapes,$index,$nesting,$reserveCheck,$usable,$compressionSensitive,
             $active,$inertChain,$inertSupportChecks,$defaultScorer,$scorer,
-            $limitX,$limitY,$limitZ,$bag,$bagX,$bagY,$bagZ,$girthY,$clearance,
+            $limitX,$limitY,$limitZ,$bag,$bagX,$bagY,$bagZ,$along,$across,$standing,$clearance,
         ]=$prepared;
         $out=[];$best=null;
         $retained=$max!==null&&$max>1?new \SplPriorityQueue():null;
@@ -170,9 +174,13 @@ final class CandidateFinder
                 $x2=$x1+$dx;$y2=$y1+$dy;$z2=$z1+$dz;
                 if($x2>$limitX||$y2>$limitY||$z2>$limitZ)continue;
                 if($bag){
-                    // Ternaries rather than max(): the call made this test dearer (44 ns against 74 ns).
-                    $thickness=$z2>$bagZ?$z2:$bagZ;
-                    if(($x2>$bagX?$x2:$bagX)+$thickness>$limitX||($y2>$bagY?$y2:$bagY)+$thickness>$girthY)continue;
+                    // Ternaries rather than max() or a Girth call: the call made this test dearer
+                    // (44 ns against 74 ns for max()).
+                    $grownZ=$z2>$bagZ?$z2:$bagZ;
+                    if($standing){
+                        $grownY=$y2>$bagY?$y2:$bagY;
+                        if(2*($grownY+$grownZ)>$along||($x2>$bagX?$x2:$bagX)+$grownY>$across)continue;
+                    }elseif(2*(($x2>$bagX?$x2:$bagX)+$grownZ)>$along||($y2>$bagY?$y2:$bagY)+$grownZ>$across)continue;
                 }
                 $tentative=null;
                 if($nesting){

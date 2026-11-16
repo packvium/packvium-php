@@ -4,6 +4,7 @@ namespace Packvium\Domain;
 
 use InvalidArgumentException;
 use Packvium\Support\BigInt;
+use Packvium\Support\ObjectRefusal;
 use Packvium\Support\SignedBigInt;
 
 /**
@@ -61,6 +62,17 @@ final class HullShape
     /** Smallest number of vertices that can enclose a volume. */
     public const MINIMUM_VERTICES = 4;
 
+    /** Most vertices an item's hull may list; refused at admission, before any per-vertex work. */
+    public const MAXIMUM_VERTICES = 32;
+
+    /** @throws ObjectRefusal */
+    public static function admitVertexCount(int $count): void
+    {
+        if ($count > self::MAXIMUM_VERTICES) {
+            throw new ObjectRefusal('above_maximum', 'hull_vertices must have at most ' . self::MAXIMUM_VERTICES . ' vertices');
+        }
+    }
+
     /** Both the face normals and the edge directions of any axis-aligned box. */
     private const UNIT_AXES = [[0, 0, 1], [0, 1, 0], [1, 0, 0]];
 
@@ -104,6 +116,37 @@ final class HullShape
     private static $shapeCache = [];
 
     /**
+     * How many separating axes the pair memo holds, before it is dropped and refilled -- the
+     * policy of the shape memo above. Counted in axes rather than pairs because a pair's size
+     * is the product of its shapes' edge counts: a 32-vertex pair is about 3900 axes and 1 MB,
+     * a box against a hull a few dozen. This ceiling is about 8 MB, under the shape memo's.
+     */
+    private const PAIR_CACHE_AXES = 16384;
+
+    /** Axis structure of every `box()`: its face normals and edge directions are always the unit axes. */
+    private const BOX_STRUCTURE = -1;
+
+    /** Next axis structure id handed to a memoised hull; ids are never reused, so a stale entry can only be unreachable.
+     * @var int */
+    private static $nextStructure = 1;
+
+    /** @var array<string,array{axes:list<array{int,int,int}>,left:array<int,array{int,int}>,right:array<int,array{int,int}>}> */
+    private static $pairCache = [];
+
+    /**
+     * @var int
+     */
+    private static $pairCacheAxes = 0;
+
+    /**
+     * Identifies the face normals and edge directions this shape contributes to a pair's axes:
+     * a `shapeFor` hull has its own id, a `box()` the shared `BOX_STRUCTURE`, and any other
+     * shape 0, which opts out of the pair memo.
+     * @var int
+     */
+    private $structure = 0;
+
+    /**
      * The rotated hull of one item in one orientation, built at most once.
      *
      * A hull depends on the item and the orientation and on nothing about where a candidate
@@ -130,6 +173,7 @@ final class HullShape
             return self::$shapeCache[$key];
         }
         $shape = self::of(self::rotate($vertices, $rotation));
+        $shape->structure = self::$nextStructure++;
         if (count(self::$shapeCache) >= self::SHAPE_CACHE_ENTRIES) {
             self::$shapeCache = [];
         }
@@ -187,7 +231,7 @@ final class HullShape
                 }
             }
         }
-        return new self(
+        $box = new self(
             $vertices,
             self::UNIT_AXES,
             self::UNIT_AXES,
@@ -195,6 +239,8 @@ final class HullShape
             max($length, $width, $height),
             1,
         );
+        $box->structure = self::BOX_STRUCTURE;
+        return $box;
     }
 
     /**
@@ -302,15 +348,17 @@ final class HullShape
     ): bool {
         $reach = max($left->maxCoordinate, $right->maxCoordinate)
             + max(self::largestComponent([$leftOrigin]), self::largestComponent([$rightOrigin]));
-        foreach (self::separatingAxes($left, $right) as $axis) {
+        $memoKey = self::rememberPair($left, $right);
+        $axes = $memoKey === null ? self::separatingAxes($left, $right) : self::$pairCache[$memoKey]['axes'];
+        foreach ($axes as $index => $axis) {
             if (!self::axisFitsNatively($reach, $axis)) {
                 if (self::separatedExactly($left, $leftOrigin, $right, $rightOrigin, $axis)) {
                     return false;
                 }
                 continue;
             }
-            [$leftLow, $leftHigh] = $left->projection($axis);
-            [$rightLow, $rightHigh] = $right->projection($axis);
+            [$leftLow, $leftHigh] = $left->projectionOnce($memoKey, 'left', $index, $axis);
+            [$rightLow, $rightHigh] = $right->projectionOnce($memoKey, 'right', $index, $axis);
             $leftShift = self::dot($leftOrigin, $axis);
             $rightShift = self::dot($rightOrigin, $axis);
             if ($leftHigh + $leftShift <= $rightLow + $rightShift
@@ -319,6 +367,46 @@ final class HullShape
             }
         }
         return true;
+    }
+
+    /**
+     * Make sure the ordered pair's axis list is memoised and return its key, or null when
+     * either shape opts out. The axes depend only on the two shapes' face normals and edge
+     * directions, never on where they stand.
+     */
+    private static function rememberPair(self $left, self $right): ?string
+    {
+        if ($left->structure === 0 || $right->structure === 0) {
+            return null;
+        }
+        $key = $left->structure . '|' . $right->structure;
+        if (isset(self::$pairCache[$key])) {
+            return $key;
+        }
+        $axes = self::separatingAxes($left, $right);
+        if (self::$pairCacheAxes + count($axes) > self::PAIR_CACHE_AXES) {
+            self::$pairCache = [];
+            self::$pairCacheAxes = 0;
+        }
+        self::$pairCache[$key] = ['axes' => $axes, 'left' => [], 'right' => []];
+        self::$pairCacheAxes += count($axes);
+        return $key;
+    }
+
+    /**
+     * This shape's projection interval on a pair's `$index`th axis, computed once per memoised
+     * pair. A box is cheap to project and varies by size, so only hulls are kept.
+     *
+     * @param 'left'|'right' $side
+     * @param array{int,int,int} $axis
+     * @return array{int,int}
+     */
+    private function projectionOnce(?string $memoKey, string $side, int $index, array $axis): array
+    {
+        if ($memoKey === null || $this->structure === self::BOX_STRUCTURE) {
+            return $this->projection($axis);
+        }
+        return self::$pairCache[$memoKey][$side][$index] = self::$pairCache[$memoKey][$side][$index] ?? $this->projection($axis);
     }
 
     /**

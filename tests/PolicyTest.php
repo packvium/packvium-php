@@ -161,6 +161,17 @@ final class PolicyTest extends TestCase
         self::assertSame(['c', 'a', 'b'], $ids(array_reverse($rules)));
     }
 
+    public static function testNumericLookingRuleIdsTieBreakByCodePointNotByNumericValue(): void
+    {
+        $rule = static fn(string $id): array => ['id' => $id, 'version' => 1, 'effective_at' => 0, 'priority' => 5,
+            'separate_tags' => ['tag' => 'x', 'from_tag' => 'y']];
+        $ids = array_map(
+            static fn($resolved): string => $resolved->id,
+            PolicyRuleSet::fromArray(['as_of' => 0, 'rules' => [$rule('9'), $rule('10'), $rule('1e1')]])->rules,
+        );
+        self::assertSame(['10', '1e1', '9'], $ids);
+    }
+
     public static function testAnUndeclaredShipmentFactIsAbsentRatherThanMatchingAnything(): void
     {
         self::assertTrue((new ShipmentContext(facility: 'SEA1'))->satisfiedBy(new ShipmentContext(facility: 'SEA1')));

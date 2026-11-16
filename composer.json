@@ -29,9 +29,9 @@
     "homepage": "https://packvium.com",
     "support": {
         "docs": "https://packvium.com/docs",
-        "issues": "https://github.com/toxakara/packvium-php/issues",
-        "source": "https://github.com/toxakara/packvium-php",
-        "security": "https://github.com/toxakara/packvium-php/blob/main/SECURITY.md"
+        "issues": "https://github.com/packvium/packvium-php/issues",
+        "source": "https://github.com/packvium/packvium-php",
+        "security": "https://github.com/packvium/packvium-php/blob/main/SECURITY.md"
     },
     "require": {
         "php": ">=7.3"

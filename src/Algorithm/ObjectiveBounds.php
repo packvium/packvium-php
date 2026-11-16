@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Algorithm;
 
+use Packvium\Config\PackingConfig;
 use Packvium\Constraint\VolumeReserve;
 use Packvium\Domain\Container;
 use Packvium\Domain\Item;
@@ -10,6 +11,7 @@ use Packvium\Domain\ShapeType;
 use Packvium\Support\BigInt;
 use Packvium\Support\ExactGeometry;
 use Packvium\Support\ExactInteger;
+use Packvium\Unit\Weight;
 
 /**
  * Lower bounds on the objective vector, and the gap against an incumbent.
@@ -31,7 +33,8 @@ use Packvium\Support\ExactInteger;
  * Complexity. `O(n log n + c log c)` for `n` instances and `c` container types, the same as
  * the Python port: one sort of the volumes, one of the weights, one of the container types
  * by cost. The volume sort compares decimal strings through `BigInt::compare` rather than
- * PHP's default string order, where "9" would sort after "10".
+ * PHP's default string order, where "9" would sort after "10". The two billed keys
+ * add `O(n + c b log n + c b log(c b))` for `b` rate-table brackets per type.
  *
  * Which instances, and when. The bound is a property of the request: `Packer` computes it
  * once per pack through `forRequest`, over every instance the request declares -- fixed
@@ -74,25 +77,32 @@ final class ObjectiveBounds
      * `compute`'s default-order vector of each of the objective's score keys, or the name of
      * the one key only that objective ranks by. `lowest_cost` scores cost ahead of
      * the container count, and the document shows the permuted vector is still a bound.
-     * `shipping_cost` and `lowest_landed_cost` get none.
+     * `shipping_cost` and `lowest_landed_cost` add one each for what a carrier bills,
+     * read from the configuration's dimensional-weight divisor.
      */
     public const OBJECTIVE_ORDERS = ObjectiveBoundScope::OBJECTIVE_ORDERS;
+
+    /** The objectives whose own key needs the configuration's divisor and units. */
+    public const BILLED_OBJECTIVES = ObjectiveBoundScope::BILLED_OBJECTIVES;
 
     /**
      * The request's bound in `$objective`'s own score order, or null where none is stated.
      *
-     * Null for an objective with no bound, for a request with a `made_to_measure` container
-     * (D13: the unused-volume key would read the machine maximum while the score
-     * reads the fabricated box), and for a request past a declared ceiling. The last
+     * Null for an objective with no bound, for a billed objective whose inventory cannot carry
+     * a packing that attains `L0` at a price, for a request with a `made_to_measure`
+     * container (D13: the unused-volume key would read the machine maximum while the
+     * score reads the fabricated box), and for a request past a declared ceiling. The last
      * withholds the bound and nothing else -- the pack is answered as it was before any
      * bound existed, rather than failing with `BoundOverflowException` (finding F5). An
      * objective's own key past the portable ceiling withholds that objective's bound alone.
      *
      * @param list<ItemInstance> $instances every instance of the request, fixed ones included
      * @param list<Container> $containers
+     * @param ?PackingConfig $config the billed objectives' divisor and units; nothing else reads it
      * @return list<int>|null
      */
-    public static function forRequest(array $instances, array $containers, string $objective): ?array
+    public static function forRequest(array $instances, array $containers, string $objective,
+        ?PackingConfig $config = null): ?array
     {
         $order = ObjectiveBoundScope::order($containers, $objective);
         if ($order === null) {
@@ -100,19 +110,77 @@ final class ObjectiveBounds
         }
         try {
             [$normalisedInstances, $normalisedContainers] = self::normalise($instances, $containers);
+            if (in_array($objective, self::BILLED_OBJECTIVES, true)) {
+                $normalisedContainers = self::withBilling($containers, $normalisedContainers, $config);
+            }
             return self::objectiveVector($normalisedInstances, $normalisedContainers, $order);
-        } catch (BoundOverflowException $refused) {
+        } catch (BoundOverflowException | BoundWithheldException $withheld) {
             return null;
         }
     }
 
     /**
+     * Each type's normalised numbers with what a carrier can bill it, at the least.
+     *
+     * `tare` and `dimensional` are weight ticks: an opened container is billed
+     * `max(tare + payload, dimensional)`, so `max(tare, dimensional)` is its floor whatever it
+     * carries. A rigid container is billed on its declared outer size, else its declared inner
+     * one; a pallet whose load overhangs is billed larger per side, never smaller, and
+     * dimensional weight only grows with each side, so the declared size is a floor. A bag is
+     * billed on the package its contents make, which can be smaller than declared, so its
+     * floor is 0. `brackets` is the rate table as `[upper bound in weight ticks, charge]`, or
+     * empty where the objective prices nothing. `O(c b)` for `b` brackets per type.
+     *
+     * @param list<Container> $containers
+     * @param list<array<string,mixed>> $normalised `normalise`'s containers, in the same order
+     * @return list<array<string,mixed>>
+     */
+    private static function withBilling(array $containers, array $normalised, ?PackingConfig $config): array
+    {
+        if ($config === null || $config->dimensionalWeightDivisor === null) {
+            throw new BoundWithheldException('a billed objective needs configuration.dimensional_weight_divisor');
+        }
+        $landed = $config->objective === 'lowest_landed_cost';
+        foreach ($containers as $index => $container) {
+            $normalised[$index]['tare'] = $container->tareWeight->ticks;
+            $normalised[$index]['dimensional'] = $container->isFlatBag() ? 0
+                : ($container->outerDimensions ?? $container->declaredInner())->dimensionalWeight(
+                    $config->dimensionalWeightDivisor,
+                    $config->dimensionalWeightLengthUnit,
+                    $config->dimensionalWeightWeightUnit,
+                )->ticks;
+            $normalised[$index]['brackets'] = $landed ? self::brackets($container) : [];
+        }
+        return $normalised;
+    }
+
+    /**
+     * The rate table as `[bound in weight ticks, charge]`; the charge at a bracket's bound is
+     * that bracket's charge, since the bound is the heaviest weight it prices.
+     *
+     * @return list<array{0:int|string,1:?int}>
+     */
+    private static function brackets(Container $container): array
+    {
+        $table = $container->rateTable;
+        if ($table === null) {
+            return [];
+        }
+        return array_map(static fn(int $bound): array => [
+            ExactInteger::mul($bound, Weight::TICKS_PER_G),
+            $table->chargeMinorOrNull($bound),
+        ], $table->weightBracketsG);
+    }
+
+    /**
      * The bound in one objective's score order, from the normalised numbers `fromNormalised`
-     * reads plus each instance's `value`, throwing `BoundOverflowException` where a ceiling
-     * withholds it -- the one predicate's, or the objective's own key's.
+     * reads plus each instance's `value` -- and, for a billed objective, each container's
+     * `tare`, `dimensional` and `brackets` (`withBilling`) -- throwing `BoundOverflowException`
+     * where a ceiling withholds it, the one predicate's or the objective's own key's, and
+     * `BoundWithheldException` where a billed objective has no priceable answer to bound.
      *
      * @param list<array{volume:string,weight:int,shrinks:bool,value:int}> $instances
-     * @param list<array{usable:string,inner:string,base_area:int|string,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int}> $containers
+     * @param list<array{usable:string,inner:string,base_area:int|string,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int,tare?:int|string,dimensional?:int|string,brackets?:list<array{0:int|string,1:?int}>}> $containers
      * @param list<int|string> $order an `OBJECTIVE_ORDERS` entry
      * @return list<int>
      */
@@ -122,7 +190,7 @@ final class ObjectiveBounds
         $vector = $evaluated['vector'];
         return array_map(static fn(int|string $position): int => is_int($position)
             ? $vector[$position]
-            : self::objectiveTerm($position, $instances, $evaluated), $order);
+            : self::objectiveTerm($position, $instances, $containers, $evaluated), $order);
     }
 
     /**
@@ -135,16 +203,25 @@ final class ObjectiveBounds
      * No term sorts: `evaluate` already paid for the only volume sort (finding F6 doubled that
      * cost once) and hands its ascending volumes and capacity total over, and the value term
      * selects the `L0` smallest values with a bounded heap in `O(n log L0)`. With `O(c)` over
-     * the container types the request bound stays `O(n log n + c log c)`.
+     * the container types the request bound stays `O(n log n + c log c)`; the billed keys add
+     * `O(n + c b log n + c b log(c b))` for `b` brackets per type.
      *
      * @param list<array{volume:string,weight:int,shrinks:bool,value:int}> $instances
-     * @param array{vector:array{int,int,int,int,int},volumes:list<string>,shrinks:bool,areas:list<int|string>,capacity:?string} $evaluated
+     * @param list<array<string,mixed>> $containers
+     * @param array{vector:array{int,int,int,int,int},volumes:list<string>,weights:list<int>,shrinks:bool,areas:list<int|string>,capacity:?string} $evaluated
      */
-    private static function objectiveTerm(string $name, array $instances, array $evaluated): int
+    private static function objectiveTerm(string $name, array $instances, array $containers, array $evaluated): int
     {
-        $unpacked = $evaluated['vector'][0];
+        [$unpacked, $opened] = $evaluated['vector'];
         if ($name === 'value_forgone') {
             return self::valueForgoneBound(array_column($instances, 'value'), $unpacked);
+        }
+        if ($name === 'billed_weight') {
+            return self::billedWeightBound($evaluated['weights'], $containers, $unpacked, $opened);
+        }
+        if ($name === 'landed_charge') {
+            return self::landedChargeBound($evaluated['weights'], $evaluated['volumes'],
+                $evaluated['shrinks'], $containers, $unpacked, $opened);
         }
         if ($name === 'achieved_height') {
             return self::achievedHeightBound($evaluated['volumes'], $evaluated['shrinks'],
@@ -152,6 +229,215 @@ final class ObjectiveBounds
         }
         return self::unpackedVolumeBound($evaluated['volumes'], $evaluated['shrinks'],
             $evaluated['capacity']);
+    }
+
+    /**
+     * `shipping_cost`'s second key, summed billed weight in ticks.
+     *
+     * A packing that leaves exactly `$unpacked` behind opens at least `$opened` containers and
+     * carries at least the lightest `n - unpacked` instances. Each opened container is billed
+     * `max(tare + payload, dimensional)`, at least its floor, and a sum of maxima is at least
+     * either sum on its own, so the two can be taken over different types. Every term is
+     * non-negative, so opening more only adds. `O(n + c log c)`.
+     *
+     * @param list<int> $weights ascending
+     * @param list<array<string,mixed>> $containers
+     */
+    private static function billedWeightBound(array $weights, array $containers, int $unpacked, int $opened): int
+    {
+        if ($opened === 0) {
+            return 0;
+        }
+        $quantities = array_map(static fn(array $c): ?int => $c['quantity'], $containers);
+        $floors = self::smallestFromInventory(array_map(self::billedFloor(...), $containers), $quantities, $opened);
+        $tares = self::smallestFromInventory(
+            array_map(static fn(array $c): int|string => $c['tare'], $containers), $quantities, $opened);
+        if ($floors === null || $tares === null) {
+            throw new BoundWithheldException('the inventory holds fewer containers than must be opened');
+        }
+        $payload = ExactInteger::normalize(self::sumBig(array_map(strval(...),
+            array_slice($weights, 0, count($weights) - $unpacked))));
+        return self::guardOutput((string)ExactInteger::max($floors, ExactInteger::add($tares, $payload)),
+            'billed weight');
+    }
+
+    /**
+     * `lowest_landed_cost`'s second key, the summed carrier charge in minor units.
+     *
+     * Every opened container is billed in exactly one bracket and pays its charge. A container
+     * in bracket `[bound, charge]` weighs at most `bound`, so it is reachable only when its
+     * floor is within it, carries at most `bound - tare` of payload (and its `max_payload`),
+     * and at most as many instances as the lightest-first count under that payload, its usable
+     * volume and `max_items`. Three relaxations of that assignment hold, and the largest is the
+     * bound: the cheapest reachable charge per container over `$opened` containers; the least
+     * cost covering the placed weight; the least cost covering the placed count. Prices need
+     * not rise with weight, which is why a bracket is chosen rather than read off the floor. A
+     * type no bracket prices offers nothing: a packing that opens one is refused, never
+     * returned. `O(n + c b log n + c b log(c b))` for `b` brackets per type: the two
+     * prefix sums, a binary search per bracket and one sort of the offers.
+     *
+     * @param list<int> $weights ascending
+     * @param list<string> $volumes ascending
+     * @param list<array<string,mixed>> $containers
+     */
+    private static function landedChargeBound(array $weights, array $volumes, bool $shrinks,
+        array $containers, int $unpacked, int $opened): int
+    {
+        $placed = count($weights) - $unpacked;
+        if ($opened === 0 || $placed === 0) {
+            return 0;
+        }
+        $payloadPrefix = self::prefixSums($weights);
+        $volumePrefix = $shrinks ? null : self::prefixSums($volumes);
+        $cheapest = [];
+        $quantities = [];
+        $offers = [];
+        foreach ($containers as $container) {
+            $floor = self::billedFloor($container);
+            $reachable = array_values(array_filter($container['brackets'],
+                static fn(array $bracket): bool => $bracket[1] !== null
+                    && ExactInteger::compare($floor, $bracket[0]) <= 0));
+            if ($reachable === []) {
+                continue;
+            }
+            $cheapest[] = min(array_column($reachable, 1));
+            $quantities[] = $container['quantity'];
+            // The volume limit is the type's, not the bracket's: asked once per type.
+            $roomy = $volumePrefix === null ? null
+                : self::fitPrefix($volumePrefix, ExactInteger::normalize($container['usable']));
+            foreach ($reachable as [$bound, $charge]) {
+                $carried = ExactInteger::sub($bound, $container['tare']);
+                if ($container['payload'] !== null && ExactInteger::compare($container['payload'], $carried) < 0) {
+                    $carried = $container['payload'];
+                }
+                $count = self::fitPrefix($payloadPrefix, $carried);
+                if ($roomy !== null) {
+                    $count = min($count, $roomy);
+                }
+                if ($container['max_items'] !== null) {
+                    $count = min($count, $container['max_items']);
+                }
+                $offers[] = [$charge, $carried, $count, $container['quantity']];
+            }
+        }
+        $byCount = self::smallestFromInventory($cheapest, $quantities, $opened);
+        $byWeight = self::cover(array_map(static fn(array $o): array => [$o[0], $o[1], $o[3]], $offers),
+            $payloadPrefix[$placed - 1]);
+        $byItems = self::cover(array_map(static fn(array $o): array => [$o[0], $o[2], $o[3]], $offers), $placed);
+        if ($byCount === null || $byWeight === null || $byItems === null) {
+            throw new BoundWithheldException('no priceable inventory carries a packing that attains L0');
+        }
+        return self::guardOutput((string)ExactInteger::max($byCount, ExactInteger::max($byWeight, $byItems)),
+            'landed charge');
+    }
+
+    /**
+     * What one container is billed whatever it carries, `max(tare, dimensional)`.
+     *
+     * @param array<string,mixed> $container
+     */
+    private static function billedFloor(array $container): int|string
+    {
+        return ExactInteger::max($container['tare'], ExactInteger::normalize($container['dimensional']));
+    }
+
+    /**
+     * The sum of the `$count` smallest of `{value repeated quantity}`, or null when the
+     * inventory holds fewer. Sorting the types and taking `min(quantity, still needed)` of
+     * each is `L2`'s rule, `O(c log c)`, without building the multiset.
+     *
+     * @param list<int|string> $values
+     * @param list<?int> $quantities
+     */
+    private static function smallestFromInventory(array $values, array $quantities, int $count): int|string|null
+    {
+        $order = array_keys($values);
+        usort($order, static fn(int $a, int $b): int => ExactInteger::compare($values[$a], $values[$b]));
+        $total = 0;
+        $needed = $count;
+        foreach ($order as $index) {
+            if ($needed === 0) {
+                break;
+            }
+            $quantity = $quantities[$index];
+            $taken = $quantity === null ? $needed : min($quantity, $needed);
+            $total = ExactInteger::add($total, ExactInteger::mul($values[$index], $taken));
+            $needed -= $taken;
+        }
+        return $needed > 0 ? null : $total;
+    }
+
+    /**
+     * Running totals of ascending non-negative values, native for as long as they fit.
+     *
+     * @param list<int|string> $ascending
+     * @return list<int|string>
+     */
+    private static function prefixSums(array $ascending): array
+    {
+        $totals = [];
+        $running = 0;
+        foreach ($ascending as $value) {
+            $running = ExactInteger::add($running, ExactInteger::normalize($value));
+            $totals[] = $running;
+        }
+        return $totals;
+    }
+
+    /**
+     * How many of the smallest values sum to at most `$capacity`, by binary search over their
+     * prefix sums: `O(log n)` per question.
+     *
+     * @param list<int|string> $prefix ascending
+     */
+    private static function fitPrefix(array $prefix, int|string $capacity): int
+    {
+        $low = 0;
+        $high = count($prefix);
+        while ($low < $high) {
+            $middle = intdiv($low + $high, 2);
+            if (ExactInteger::compare($prefix[$middle], $capacity) <= 0) {
+                $low = $middle + 1;
+            } else {
+                $high = $middle;
+            }
+        }
+        return $low;
+    }
+
+    /**
+     * The least cost covering `$need` units from `[cost, capacity, quantity]` offers, taken
+     * fractionally and rounded up, or null when the offers cannot cover it.
+     *
+     * A fractional covering problem with one constraint is solved exactly by taking offers in
+     * order of cost per unit, compared by cross-multiplication. Only the last offer is taken
+     * in part, so the cost is an integer plus one ceiling and no fraction is carried. Offers
+     * of equal cost per unit give the same total in either order, so the order needs no
+     * tie-break. Each offer is limited by its type's whole inventory, which only weakens the
+     * bound. `O(k log k)` for `k` offers.
+     *
+     * @param list<array{0:int,1:int|string,2:?int}> $offers
+     */
+    private static function cover(array $offers, int|string $need): int|string|null
+    {
+        if (ExactInteger::sign($need) <= 0) {
+            return 0;
+        }
+        $ranked = array_values(array_filter($offers,
+            static fn(array $offer): bool => ExactInteger::sign($offer[1]) > 0));
+        usort($ranked, static fn(array $a, array $b): int => ExactInteger::compare(
+            ExactInteger::mul($a[0], $b[1]), ExactInteger::mul($b[0], $a[1])));
+        $total = 0;
+        foreach ($ranked as [$cost, $capacity, $quantity]) {
+            if ($quantity === null || ExactInteger::compare(ExactInteger::mul($quantity, $capacity), $need) >= 0) {
+                // ceil(cost * need / capacity), as the negated floor of its negation.
+                return ExactInteger::add($total, ExactInteger::negate(ExactInteger::floorDiv(
+                    ExactInteger::negate(ExactInteger::mul($cost, $need)), $capacity)));
+            }
+            $total = ExactInteger::add($total, ExactInteger::mul($cost, $quantity));
+            $need = ExactInteger::sub($need, ExactInteger::mul($capacity, $quantity));
+        }
+        return null;
     }
 
     /**
@@ -401,12 +687,12 @@ final class ObjectiveBounds
 
     /**
      * `fromNormalised`'s vector, with the intermediates the objective-only keys reuse rather
-     * than recompute: the ascending volumes, the shrink flag, the floors and the volume
-     * capacity total (null when unbounded).
+     * than recompute: the ascending volumes and weights, the shrink flag, the floors and the
+     * volume capacity total (null when unbounded).
      *
      * @param list<array{volume:string,weight:int,shrinks:bool,value?:int}> $instances
      * @param list<array{usable:string,inner:string,base_area:int|string,height:int,payload:?int,max_items:?int,quantity:?int,cost_minor:int}> $containers
-     * @return array{vector:array{int,int,int,int,int},volumes:list<string>,shrinks:bool,areas:list<int|string>,capacity:?string}
+     * @return array{vector:array{int,int,int,int,int},volumes:list<string>,weights:list<int>,shrinks:bool,areas:list<int|string>,capacity:?string}
      */
     private static function evaluate(array $instances, array $containers): array
     {
@@ -459,7 +745,7 @@ final class ObjectiveBounds
             self::guardOutput((string)$unused, 'unused volume'),
             self::guardOutput((string)$height, 'stack height'),
         ];
-        return ['vector' => $vector, 'volumes' => $volumes, 'shrinks' => $shrinks,
+        return ['vector' => $vector, 'volumes' => $volumes, 'weights' => $weights, 'shrinks' => $shrinks,
             'areas' => $areas, 'capacity' => $capacities['volume']];
     }
 

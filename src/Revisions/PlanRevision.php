@@ -863,9 +863,18 @@ final class PlanRevision
         $box->inner_dimensions = self::tickBox($inner);
         $box->outer_dimensions = self::tickBox($outer);
         $fee = self::stockInteger(JsonValue::get($machine, 'cost_minor'), 'cost_minor');
-        $box->cost_minor = (int) BigInt::add((string) $fee, MadeToMeasure::perSquareMetre($price, $area));
+        $box->cost_minor = self::safeCost(BigInt::add((string) $fee, MadeToMeasure::perSquareMetre($price, $area)));
         $box->tare_weight = (object) ['value' => BigInt::add((string) $declaredTare, MadeToMeasure::perSquareMetre($tareRate, $area)), 'unit' => 'ticks'];
         return $box;
+    }
+
+    /** C-13: the exact cost as an int, or a refusal in the wording of the admission rule; a cut box larger than its machine's declared size can pass 2^53 - 1. */
+    private static function safeCost(string $cost): int
+    {
+        if (BigInt::compare($cost, MadeToMeasure::MAX_EXACT_INTEGER) > 0) {
+            throw new PlanRevisionException('invalid_revision', "a made-to-measure container's cost_per_square_metre_minor prices the largest box above " . MadeToMeasure::MAX_EXACT_INTEGER);
+        }
+        return (int) $cost;
     }
 
     /** @param mixed $value */

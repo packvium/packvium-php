@@ -99,11 +99,12 @@ final class IndependentSolutionValidator
                 );
                 if($axleFailure!==null)$issues[]=new ValidationIssue($axleFailure[0],$packed->id().': '.$axleFailure[1]);
             }
-            if($packed->container->isFlatBag()){
+            $girth=$packed->container->girth();
+            if($girth!==null){
                 // The girth rule over the envelopes alone, widened by a side gusset
-                // (1.10); the frame is checked above.
-                [$a,$b,$c]=FlatBag::extentOf($packed->placements);
-                if(!FlatBag::girthAdmits($packed->container->innerDimensions,$a,$b,$c,$packed->container->sideGussetTicks()))$issues[]=new ValidationIssue('bag_girth_exceeded',$packed->id());
+                // (1.10) and lengthened by a bottom one, flat or standing; the frame
+                // is checked above.
+                if(!$girth->admits(FlatBag::extentOf($packed->placements)))$issues[]=new ValidationIssue('bag_girth_exceeded',$packed->id());
             }
             $onRoute=false;foreach($placements as $p)if($p->instance->item->stopIndex!==null){$onRoute=true;break;}
             if($onRoute){
@@ -124,12 +125,12 @@ final class IndependentSolutionValidator
             }
             $missing=[];
             foreach($expected as $id=>$_)if(!isset($seen[$id]))$missing[]=$id;
-            sort($missing);
+            sort($missing,SORT_STRING);
             foreach($missing as $id)$issues[]=new ValidationIssue('missing_item',$id);
         }
         $unknown=[];
         foreach($seen as $id=>$_)if(!isset($expected[$id]))$unknown[]=$id;
-        sort($unknown);
+        sort($unknown,SORT_STRING);
         foreach($unknown as $id)$issues[]=new ValidationIssue('unknown_item',$id);
         foreach(self::splitGroups($containers) as $detail)$issues[]=new ValidationIssue('group_split',$detail);
         array_push($issues,...self::madeToMeasureIssues($request,$containers));
@@ -253,7 +254,7 @@ final class IndependentSolutionValidator
             UnloadingDependencyGraph::safeRouteRemovalOrder($boxes,$stops,$packed->container->innerDimensions);
         }catch(RouteSequenceError $error){
             $stuckIds=array_map(static fn(int $i)=>$placements[$i]->instance->id(),$error->stuck);
-            sort($stuckIds);
+            sort($stuckIds,SORT_STRING);
             return new ValidationIssue(
                 'unloading_order_violation',
                 $packed->id().': stop '.$error->stop.' cannot be fully unloaded ('.implode(', ',$stuckIds).' still blocked)',
@@ -319,7 +320,8 @@ final class IndependentSolutionValidator
         $list=array_map('strval',array_keys($keys));
         usort($list,static function(string $left,string $right):int{
             $a=explode("\0",$left);$b=explode("\0",$right);
-            return [$a[0],$a[1],(int)$a[2],(int)$a[3],(int)$a[4],$a[5]]<=>[$b[0],$b[1],(int)$b[2],(int)$b[3],(int)$b[4],$b[5]];
+            // strcmp on the ids: `<=>` compares numeric strings as numbers ("9" < "10"), Python as text.
+            return strcmp($a[0],$b[0])?:strcmp($a[1],$b[1])?:[(int)$a[2],(int)$a[3],(int)$a[4],$a[5]]<=>[(int)$b[2],(int)$b[3],(int)$b[4],$b[5]];
         });
         return $list;
     }
@@ -339,11 +341,11 @@ final class IndependentSolutionValidator
                 if($group===null)continue;
                 $located[$group][$packed->id()]=true;
             }
-        ksort($located);
+        ksort($located,SORT_STRING);
         $out=[];
         foreach($located as $group=>$where){
             if(count($where)<=1)continue;
-            $ids=array_keys($where);sort($ids);
+            $ids=array_keys($where);sort($ids,SORT_STRING);
             $out[]=$group.': '.implode(', ',$ids);
         }
         return $out;
@@ -362,7 +364,7 @@ final class IndependentSolutionValidator
                 $group=$placement->instance->item->group;
                 if($group!==null)$placed[$group][$placement->instance->id()]=true;
             }
-        ksort($expected);$out=[];
+        ksort($expected,SORT_STRING);$out=[];
         foreach($expected as $group=>$members){
             $count=count($placed[$group]??[]);
             if($count>0&&$count<count($members))$out[]=$group.': '.$count.'/'.count($members).' packed';

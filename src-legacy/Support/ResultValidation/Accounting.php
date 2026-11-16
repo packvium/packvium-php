@@ -148,9 +148,7 @@ final class Accounting
                 return false;
             }
         }
-        return !$container->flatBag
-            || (Exact::compare(Exact::add($size[0], $size[2]), $container->inner[0]) <= 0
-                && Exact::compare(Exact::add($size[1], $size[2]), Exact::add($container->inner[1], $container->sideGusset)) <= 0);
+        return !$container->flatBag || ContainerCheck::girthBreach($container, $size[0], $size[1], $size[2]) === null;
     }
 
     /**

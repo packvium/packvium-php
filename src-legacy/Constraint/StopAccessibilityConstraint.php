@@ -2,6 +2,7 @@
 declare(strict_types=1);
 namespace Packvium\Constraint;
 use InvalidArgumentException;
+use Packvium\Domain\AxisAlignedBox;
 use Packvium\Domain\Dimensions;
 use Packvium\Domain\Placement;
 use Packvium\Domain\SweptRegion;
@@ -48,6 +49,14 @@ final class StopAccessibilityConstraint implements PlacementConstraint
     private $clear=[];
     /** @var list<int|float> */
     private $stops=[];
+    /** @var list<AxisAlignedBox> */
+    private $boxes=[];
+    /** @var list<array<string,array{0:int,1:int,2:int,3:int,4:int,5:int}>> */
+    private $sweeps=[];
+    /**
+     * @var bool
+     */
+    private $stopsVary=false;
 
     /** @param list<string> $directions */
     public function __construct(array $directions=[])
@@ -96,6 +105,10 @@ final class StopAccessibilityConstraint implements PlacementConstraint
      * with different doors have different answers for the same boxes, and nothing else in
      * the key separates them.
      *
+     * The same entry holds what only depends on those placements: their envelope boxes, the
+     * region each finite-stop box sweeps towards each door, and whether their stops differ.
+     * A placement is immutable, so none of it can go stale while the key holds.
+     *
      * @param list<Placement> $placements
      * @param list<string> $directions
      * @return array{0:list<array<string,true>>,1:list<int|float>}
@@ -105,15 +118,15 @@ final class StopAccessibilityConstraint implements PlacementConstraint
         if($this->placements===$placements&&$this->container==$container&&$this->directions===$directions)return [$this->clear,$this->stops];
         $stops=[];$boxes=[];
         foreach($placements as $p){$stops[]=self::stopOf($p);$boxes[]=$p->envelopeBox();}
-        $clear=[];
+        $clear=[];$sweeps=[];
         foreach($boxes as $index=>$box){
-            $open=[];
+            $open=[];$swept=[];
             if($stops[$index]===INF){
                 // Never unloaded, so it needs no door of its own -- it only ever blocks.
                 foreach($directions as $d)$open[$d]=true;
             }else{
                 foreach($directions as $d){
-                    $sweep=SweptRegion::volume($box,$container,$d);
+                    $sweep=$swept[$d]=SweptRegion::volume($box,$container,$d);
                     $blocked=false;
                     foreach($boxes as $other=>$otherBox){
                         if($other!==$index&&$stops[$other]>$stops[$index]&&SweptRegion::intersects($sweep,$otherBox)){$blocked=true;break;}
@@ -121,9 +134,11 @@ final class StopAccessibilityConstraint implements PlacementConstraint
                     if(!$blocked)$open[$d]=true;
                 }
             }
-            $clear[]=$open;
+            $clear[]=$open;$sweeps[]=$swept;
         }
         $this->placements=$placements;$this->container=$container;$this->directions=$directions;$this->clear=$clear;$this->stops=$stops;
+        $this->boxes=$boxes;$this->sweeps=$sweeps;
+        $this->stopsVary=count(array_unique($stops,SORT_REGULAR))>1;
         return [$clear,$stops];
     }
 
@@ -155,8 +170,7 @@ final class StopAccessibilityConstraint implements PlacementConstraint
         // One distinct stop means nothing can be due before anything else, so no corridor
         // can be blocked by a later item. Checked over the candidate too, or the first
         // placement into an empty container would skip a check it should make.
-        $distinct=$stops;$distinct[]=$candidateStop;
-        if(count(array_unique($distinct,SORT_REGULAR))<2)return ConstraintResult::allow();
+        if(!$this->stopsVary&&($stops===[]||$candidateStop===$stops[0]))return ConstraintResult::allow();
 
         $candidate=$c->envelopeBox();
         foreach($c->placements as $index=>$placement){
@@ -164,7 +178,7 @@ final class StopAccessibilityConstraint implements PlacementConstraint
             if($clear[$index]===[])continue;
             $stillOpen=false;
             foreach(array_keys($clear[$index]) as $d){
-                if(!SweptRegion::intersects(SweptRegion::volume($placement->envelopeBox(),$inner,$d),$candidate)){$stillOpen=true;break;}
+                if(!SweptRegion::intersects($this->sweeps[$index][$d],$candidate)){$stillOpen=true;break;}
             }
             if(!$stillOpen){
                 $stop=$stops[$index];
@@ -177,8 +191,8 @@ final class StopAccessibilityConstraint implements PlacementConstraint
         foreach($directions as $d){
             $sweep=SweptRegion::volume($candidate,$inner,$d);
             $blocked=false;
-            foreach($c->placements as $other=>$placement){
-                if($stops[$other]>$candidateStop&&SweptRegion::intersects($sweep,$placement->envelopeBox())){$blocked=true;break;}
+            foreach($this->boxes as $other=>$otherBox){
+                if($stops[$other]>$candidateStop&&SweptRegion::intersects($sweep,$otherBox)){$blocked=true;break;}
             }
             if(!$blocked)return ConstraintResult::allow();
         }

@@ -46,6 +46,20 @@ final class ContainerSpec
      * @var int|string
      */
     public $sideGusset = 0;
+    /**
+     * 1.11: a gusseted bag's bottom gusset depth K in ticks, which lengthens the
+     * length girth to 2(a + c) <= 2L + K; 0 where none is declared.
+     *
+     * @var int|string
+     */
+    public $bottomGusset = 0;
+    /**
+     * A bag standing on its bottom gusset, whose `$inner` is then the W x H x L frame
+     * it is packed in.
+     *
+     * @var bool
+     */
+    public $standing = false;
     /** @var bool */
     public $reportsAchievedExtent;
     /** @var MachineSpec|null */

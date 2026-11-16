@@ -2,14 +2,17 @@
 declare(strict_types=1);
 namespace Packvium\Tests;
 
-use Packvium\Domain\{Container, Dimensions, FixedPlacement, Item, ItemInstance, MadeToMeasure, PackingRequest, Point, Rotation, ShapeType};
-use Packvium\Algorithm\{BoundOverflowException, ObjectiveBounds};
+use Packvium\Domain\{Container, Dimensions, FixedPlacement, Item, ItemInstance, MadeToMeasure, PackingRequest, Point, RateTable, Rotation, ShapeType};
+use Packvium\Algorithm\{BoundOverflowException, BoundWithheldException, ObjectiveBounds};
 use Packvium\Config\PackingConfig;
 use Packvium\Objective\DefaultSolutionScorer;
 use Packvium\Packer;
 use Packvium\Result\PackingStatus;
-use Packvium\Support\BigInt;
+use Packvium\Serialization\ArrayCodec;
+use Packvium\Support\{BigInt, ExactInteger};
 use Packvium\Unit\{Length, Weight};
+
+use function Packvium\Validation\validate;
 
 /**
  * This engine's lower bounds against Python's, on the shared corpus.
@@ -45,7 +48,8 @@ final class ObjectiveBoundsTest extends TestCase
 
     /**
      * Every covered objective's vector for one normalised input, null where a ceiling
-     * withholds it -- the shape the scene's `objectives` records.
+     * withholds it -- the shape the scene's `objectives` records. The billed objectives read
+     * a configuration these inputs do not carry; the scene's `billed` cases hold them.
      *
      * @param list<array<string,mixed>> $instances
      * @param list<array<string,mixed>> $containers
@@ -55,6 +59,9 @@ final class ObjectiveBoundsTest extends TestCase
     {
         $vectors = [];
         foreach (ObjectiveBounds::OBJECTIVE_ORDERS as $objective => $order) {
+            if (in_array($objective, ObjectiveBounds::BILLED_OBJECTIVES, true)) {
+                continue;
+            }
             try {
                 $vectors[$objective] = ObjectiveBounds::objectiveVector($instances, $containers, $order);
             } catch (BoundOverflowException $refused) {
@@ -83,6 +90,47 @@ final class ObjectiveBoundsTest extends TestCase
             ksort($case['objectives']);
             self::assertSame($case['objectives'], self::objectives($case['instances'], $case['containers']),
                 "objective vectors diverge from Python on {$case['fixture']}");
+        }
+    }
+
+    /**
+     * A billed objective's vector, or null where it is withheld -- for want of a priceable
+     * answer or past a ceiling.
+     *
+     * @param list<array<string,mixed>> $instances
+     * @param list<array<string,mixed>> $containers
+     * @return ?list<int>
+     */
+    private static function billedVector(array $instances, array $containers, string $objective): ?array
+    {
+        try {
+            return ObjectiveBounds::objectiveVector($instances, $containers,
+                ObjectiveBounds::OBJECTIVE_ORDERS[$objective]);
+        } catch (BoundOverflowException | BoundWithheldException $withheld) {
+            return null;
+        }
+    }
+
+    /**
+     * The scene's billed cases, from the corpus and the oracle's hand-checked
+     * examples. Each container carries what a carrier bills -- `tare`, `dimensional` as a
+     * decimal string and `brackets` as `[bound ticks as a string, charge]` -- so the check is
+     * about the arithmetic over those numbers; deriving them from a request is asserted below.
+     */
+    public static function testEveryBilledCaseMatchesPythonExactly(): void
+    {
+        $billed = self::scene()['billed'] ?? [];
+        self::assertGreaterThan(14, count($billed), 'the scene carries too few billed cases');
+        foreach ($billed as $case) {
+            $containers = array_map(static fn(array $raw): array => [
+                'dimensional' => ExactInteger::normalize($raw['dimensional']),
+                'brackets' => array_map(static fn(array $bracket): array
+                    => [ExactInteger::normalize((string)$bracket[0]), $bracket[1]], $raw['brackets']),
+            ] + $raw, $case['containers']);
+            self::assertSame($case['bounds'], ObjectiveBounds::fromNormalised($case['instances'], $containers),
+                "bounds diverge from Python on {$case['fixture']}");
+            self::assertSame($case['vector'], self::billedVector($case['instances'], $containers, $case['objective']),
+                "{$case['objective']} diverges from Python on {$case['fixture']}");
         }
     }
 
@@ -331,7 +379,7 @@ final class ObjectiveBoundsTest extends TestCase
     /**
      * `lowest_cost` reads the same five numbers in its own order; `maximum_value`,
      * `open_dimension_height` and `maximum_volume` add the one key each ranks by alone
-     *; the two shipping objectives get none.
+     *; the two shipping objectives one each for what a carrier bills.
      */
     public static function testTheRequestBoundIsStatedOnlyForTheCoveredObjectives(): void
     {
@@ -354,15 +402,227 @@ final class ObjectiveBoundsTest extends TestCase
             ObjectiveBounds::forRequest($items, $crate, 'open_dimension_height'));
         self::assertSame([0, $unpacked, $count, $cost, $unused],
             ObjectiveBounds::forRequest($items, $crate, 'maximum_volume'));
-        foreach (['shipping_cost', 'lowest_landed_cost'] as $objective) {
-            self::assertNull(ObjectiveBounds::forRequest($items, $crate, $objective), $objective);
-        }
+        // A 100 mm cube is 1 kg dimensional at 1000 cm/kg, above two weightless boxes in it.
+        $billing = new PackingConfig(objective: 'shipping_cost', dimensionalWeightDivisor: 1000,
+            dimensionalWeightLengthUnit: 'cm', dimensionalWeightWeightUnit: 'kg');
+        self::assertSame([$unpacked, 1000 * Weight::TICKS_PER_G, $count, $unused, $height],
+            ObjectiveBounds::forRequest($items, $crate, 'shipping_cost', $billing));
 
         // D13: a box cut to measure has no declared size until it is cut.
         $ticks = static fn(int $mm): array => [$mm * Length::TICKS_PER_MM, $mm * Length::TICKS_PER_MM, $mm * Length::TICKS_PER_MM];
         $machine = [new Container('m', Dimensions::mm(1510, 1510, 1510),
             madeToMeasure: new MadeToMeasure($ticks(60), $ticks(25)))];
         self::assertNull(ObjectiveBounds::forRequest($items, $machine, 'default'));
+    }
+
+    /**
+     * The billed key needs the configuration's divisor; without one there is no number to
+     * bound, and the packer refuses such a request before it gets here.
+     */
+    public static function testABilledObjectiveWithoutItsDivisorGetsNone(): void
+    {
+        $items = self::instancesOf(Item::create('i', Dimensions::mm(10, 10, 10)), 2);
+        $box = [Container::create('box', Dimensions::mm(30, 30, 30))];
+        foreach (ObjectiveBounds::BILLED_OBJECTIVES as $objective) {
+            self::assertNull(ObjectiveBounds::forRequest($items, $box, $objective), $objective);
+            self::assertNull(ObjectiveBounds::forRequest($items, $box, $objective,
+                new PackingConfig(objective: $objective)), $objective);
+        }
+    }
+
+    /**
+     * One billed request, packed by the exhaustive profile at 5000 cm/kg.
+     *
+     * @param list<array<string,mixed>> $containers
+     * @param list<array<string,mixed>> $items
+     * @return array<string,mixed>
+     */
+    private static function billed(string $objective, array $containers, array $items): array
+    {
+        return ArrayCodec::pack(['items' => $items, 'containers' => $containers, 'configuration' => [
+            'objective' => $objective, 'dimensional_weight_divisor' => 5000,
+            'dimensional_weight_length_unit' => 'cm', 'dimensional_weight_weight_unit' => 'kg',
+            'solver_profile' => 'exact_small']]);
+    }
+
+    /** @return array<string,mixed> */
+    private static function brick(int $quantity, int $grams): array
+    {
+        return ['id' => 'brick', 'quantity' => $quantity, 'weight' => "{$grams} g",
+            'dimensions' => ['length' => '100', 'width' => '100', 'height' => '100']];
+    }
+
+    /**
+     * A 200 x 100 x 100 mm box at 5000 cm/kg is 0.4 kg dimensional; two 1 kg bricks
+     * and a 300 g tare bill 2.3 kg actual, so the bound is the actual weight, and attained.
+     */
+    public static function testShippingCostBillsAtLeastTheFloorAndAtLeastTarePlusPayload(): void
+    {
+        $result = self::billed('shipping_cost', [['id' => 'box', 'tare_weight' => '300 g',
+            'inner_dimensions' => ['length' => '200', 'width' => '100', 'height' => '100']]], [self::brick(2, 1000)]);
+        self::assertSame([0, 2300 * Weight::TICKS_PER_G], array_slice($result['optimality']['lower_bound'], 0, 2));
+        self::assertSame('optimal', $result['status']);
+    }
+
+    /** A 400 mm cube is 12.8 kg dimensional at 5000 cm/kg, above one light brick and its tare. */
+    public static function testShippingCostTakesTheDimensionalFloorWhenTheBoxIsBulky(): void
+    {
+        $result = self::billed('shipping_cost', [['id' => 'bulky',
+            'inner_dimensions' => ['length' => '400', 'width' => '400', 'height' => '400']]], [self::brick(1, 100)]);
+        self::assertSame(12800 * Weight::TICKS_PER_G, $result['optimality']['lower_bound'][1]);
+    }
+
+    /**
+     * Two 1000 g bricks cannot share a 1500 g bracket, so two containers pay it twice: the
+     * item cover says 200, which the weight cover alone (134) and the count term (100) miss.
+     */
+    public static function testLandedCostSeesThatTwoBricksCannotShareABracket(): void
+    {
+        $result = self::billed('lowest_landed_cost', [
+            ['id' => 'snug-dear', 'inner_dimensions' => ['length' => '200', 'width' => '100', 'height' => '100'],
+                'rate_table' => ['weight_brackets_g' => [20000], 'prices_minor' => [5000]]],
+            ['id' => 'unit-cheap', 'inner_dimensions' => ['length' => '100', 'width' => '100', 'height' => '100'],
+                'rate_table' => ['weight_brackets_g' => [1500], 'prices_minor' => [100]]],
+        ], [self::brick(2, 1000)]);
+        self::assertSame([0, 200], array_slice($result['optimality']['lower_bound'], 0, 2));
+        self::assertSame(200, $result['score'][1]);
+    }
+
+    /**
+     * One normalised billed container: unlimited, no limits, room for anything.
+     *
+     * @param list<array{0:int|string,1:?int}> $brackets
+     * @return array<string,mixed>
+     */
+    private static function billedType(int $tare, int $dimensional, array $brackets, ?int $quantity = null): array
+    {
+        return ['usable' => '10', 'inner' => '10', 'base_area' => 10, 'height' => 1, 'payload' => null,
+            'max_items' => null, 'quantity' => $quantity, 'cost_minor' => 0,
+            'tare' => $tare, 'dimensional' => $dimensional, 'brackets' => $brackets];
+    }
+
+    /**
+     * A promotional dip: the 2 kg bracket is dearer than the 5 kg one. A load that could be
+     * billed in either is bounded by the cheaper, since prices need not rise with weight.
+     */
+    public static function testLandedCostReadsTheCheapestBracketAFloorCanReachNotTheFloorsOwn(): void
+    {
+        $landed = new \ReflectionMethod(ObjectiveBounds::class, 'landedChargeBound');
+        $type = self::billedType(0, 0, [[2000 * Weight::TICKS_PER_G, 700], [5000 * Weight::TICKS_PER_G, 400]]);
+        self::assertSame(400, $landed->invoke(null, [1000 * Weight::TICKS_PER_G], ['1'], false, [$type], 0, 1));
+    }
+
+    /** `max(price, minimum)` then the ceiling surcharge, the rate table's own order. */
+    public static function testLandedCostAppliesTheMinimumChargeAndTheSurchargeToEveryBracket(): void
+    {
+        $container = Container::create('c', Dimensions::mm(100, 100, 100),
+            rateTable: new RateTable([1000, 2000], [100, 900], minimumChargeMinor: 300, fuelSurchargePermille: 85));
+        $brackets = new \ReflectionMethod(ObjectiveBounds::class, 'brackets');
+        self::assertSame([[1000 * Weight::TICKS_PER_G, 326], [2000 * Weight::TICKS_PER_G, 977]],
+            $brackets->invoke(null, $container));
+    }
+
+    /**
+     * A floor above every bracket cannot be priced, and a packing that opens it is refused
+     * rather than returned, so with nothing else to open no statement is made.
+     */
+    public static function testATypeNoBracketCanPriceIsLeftOutAndNoneLeftWithholdsTheBound(): void
+    {
+        $landed = new \ReflectionMethod(ObjectiveBounds::class, 'landedChargeBound');
+        self::assertThrows(BoundWithheldException::class, static fn() => $landed->invoke(
+            null, [1], ['1'], false, [self::billedType(0, 10, [[5, 100]])], 0, 1));
+    }
+
+    /** Greedy by cost per unit is exact for one covering constraint; inventory caps an offer. */
+    public static function testTheFractionalCoverTakesCostPerUnitOrderAndRoundsOnlyOnce(): void
+    {
+        $cover = new \ReflectionMethod(ObjectiveBounds::class, 'cover');
+        self::assertSame(24, $cover->invoke(null, [[10, 3, null], [4, 1, null]], 7), '7 x 10/3, rounded up');
+        self::assertSame(10 + 16, $cover->invoke(null, [[10, 3, 1], [4, 1, null]], 7), 'one 3-unit, then 4 x 4');
+        self::assertNull($cover->invoke(null, [[10, 3, 1]], 7), 'cannot cover');
+        self::assertSame(0, $cover->invoke(null, [[0, 5, null]], 7));
+    }
+
+    public static function testTheShippingBoundIsWithheldWithoutEnoughInventoryToOpen(): void
+    {
+        $billedWeight = new \ReflectionMethod(ObjectiveBounds::class, 'billedWeightBound');
+        self::assertThrows(BoundWithheldException::class, static fn() => $billedWeight->invoke(
+            null, [1, 1], [self::billedType(0, 5, [], 1)], 0, 2));
+    }
+
+    /**
+     * One `lowest_landed_cost` request at 5000 cm/kg, packed by the fast profile.
+     *
+     * @param list<array<string,mixed>> $containers
+     * @param list<array<string,mixed>> $items
+     * @return array<string,mixed>
+     */
+    private static function landedRequest(array $containers, array $items): array
+    {
+        return ['items' => $items, 'containers' => $containers, 'configuration' => [
+            'objective' => 'lowest_landed_cost', 'dimensional_weight_divisor' => 5000,
+            'dimensional_weight_length_unit' => 'cm', 'dimensional_weight_weight_unit' => 'kg',
+            'solver_profile' => 'fast', 'time_limit_ms' => 20000]];
+    }
+
+    /**
+     * A type whose floor no bracket reaches offers nothing; a payload cap and a slot limit
+     * bound what a bracket carries; a nesting item drops the volume count. The engine's
+     * stated bound and the validator's recomputed one agree.
+     */
+    public static function testTheLandedBoundReadsPayloadSlotAndShrinkingLimitsAlikeInEngineAndValidator(): void
+    {
+        $request = self::landedRequest([
+            ['id' => 'bulky', 'inner_dimensions' => ['length' => '500', 'width' => '500', 'height' => '500'],
+                'rate_table' => ['weight_brackets_g' => [1000], 'prices_minor' => [10]]],
+            ['id' => 'capped', 'max_payload' => '1500 g', 'max_items' => 1,
+                'inner_dimensions' => ['length' => '200', 'width' => '200', 'height' => '200'],
+                'rate_table' => ['weight_brackets_g' => [3000, 9000], 'prices_minor' => [300, 200]]],
+        ], [['id' => 'cup', 'quantity' => 2, 'weight' => '1000 g', 'nesting_height' => '10',
+            'dimensions' => ['length' => '100', 'width' => '100', 'height' => '50']]]);
+        $result = ArrayCodec::pack($request);
+        self::assertSame(400, $result['optimality']['lower_bound'][1]);
+        self::assertSame([], validate($request, $result));
+    }
+
+    /** A payload no instance fits places nothing, opens nothing and bills nothing. */
+    public static function testNothingPlaceableBoundsTheBilledKeysAtZero(): void
+    {
+        $request = self::landedRequest([['id' => 'tiny', 'quantity' => 1, 'max_payload' => '1 g',
+            'inner_dimensions' => ['length' => '200', 'width' => '200', 'height' => '200'],
+            'rate_table' => ['weight_brackets_g' => [3000], 'prices_minor' => [300]]]],
+            [['id' => 'brick', 'weight' => '1000 g', 'dimensions' => ['length' => '100', 'width' => '100', 'height' => '100']]]);
+        foreach (ObjectiveBounds::BILLED_OBJECTIVES as $objective) {
+            $request['configuration']['objective'] = $objective;
+            $result = ArrayCodec::pack($request);
+            self::assertSame([1, 0], array_slice($result['optimality']['lower_bound'], 0, 2), $objective);
+            self::assertSame([], validate($request, $result), $objective);
+        }
+        $billedWeight = new \ReflectionMethod(ObjectiveBounds::class, 'billedWeightBound');
+        self::assertSame(0, $billedWeight->invoke(null, [1], [self::billedType(0, 5, [])], 1, 0));
+        $landed = new \ReflectionMethod(ObjectiveBounds::class, 'landedChargeBound');
+        self::assertSame(0, $landed->invoke(null, [1], ['1'], false, [], 1, 0));
+    }
+
+    /** A container without a rate table prices nothing, and nothing to cover costs nothing. */
+    public static function testTheBillingHelpersCoverTheirEdges(): void
+    {
+        $brackets = new \ReflectionMethod(ObjectiveBounds::class, 'brackets');
+        self::assertSame([], $brackets->invoke(null, Container::create('bare', Dimensions::mm(10, 10, 10))));
+        $cover = new \ReflectionMethod(ObjectiveBounds::class, 'cover');
+        self::assertSame(0, $cover->invoke(null, [[1, 1, null]], 0));
+    }
+
+    /**
+     * § 1.5: absence is "no statement", never "attained". Every built-in objective is covered
+     * since, so the withheld case is a made-to-measure container (D13).
+     */
+    public static function testAWithheldBoundStatesNothing(): void
+    {
+        // A copy of the conformance fixture, so the test also runs in the published package.
+        $path = __DIR__ . '/fixtures/feature-made-to-measure-dimensional-weight-on-outer.json';
+        $result = ArrayCodec::pack(json_decode((string)file_get_contents($path), true));
+        self::assertSame(['code'], array_keys($result['optimality']));
     }
 
     /**

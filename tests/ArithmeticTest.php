@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Packvium\Tests;
 
+use Packvium\Support\ObjectRefusal;
 use InvalidArgumentException;
 use Packvium\Support\Arithmetic;
 use Packvium\Support\BigInt;
@@ -124,5 +125,34 @@ final class ArithmeticTest extends TestCase
     {
         self::assertThrows(InvalidArgumentException::class, static fn() => Arithmetic::mulDivCeil(1, 1, 0));
         self::assertThrows(InvalidArgumentException::class, static fn() => Arithmetic::mulDivCeil(1, 1, -1));
+    }
+
+    public static function testCeilRefusesAQuotientBeyondTheIntegerRange(): void
+    {
+        // A product whose ceiling quotient passes PHP_INT_MAX used to reach `(int)` and fail
+        // with a TypeError further out; it is a typed refusal instead.
+        try {
+            Arithmetic::mulDivCeil(9007199254740991, 9007199254740991, 1);
+            self::assertTrue(false, 'a quotient past PHP_INT_MAX must be refused');
+        } catch (ObjectRefusal $refusal) {
+            self::assertSame('above_maximum', $refusal->reason());
+        }
+        self::assertThrows(ObjectRefusal::class, static fn() => Arithmetic::mulDivCeil(PHP_INT_MAX, 2, 1));
+        self::assertSame(PHP_INT_MAX, Arithmetic::mulDivCeil(PHP_INT_MAX, 2, 2));
+    }
+
+    public static function testExactCeilKeepsAQuotientBeyondTheIntegerRangeAsADecimalString(): void
+    {
+        self::assertSame(7, Arithmetic::mulDivCeilExact(20, 2, 6));
+        self::assertSame(PHP_INT_MAX, Arithmetic::mulDivCeilExact(PHP_INT_MAX, 2, 2));
+        self::assertSame('81129638414606663681390495662081', Arithmetic::mulDivCeilExact(9007199254740991, 9007199254740991, 1));
+        self::assertSame('18446744073709551614', Arithmetic::mulDivCeilExact(PHP_INT_MAX, 2, 1));
+        self::assertThrows(InvalidArgumentException::class, static fn() => Arithmetic::mulDivCeilExact(1, 1, 0));
+    }
+
+    public static function testANonNegativeSumBeyondTheIntegerRangeIsRefusedNotFloated(): void
+    {
+        self::assertSame(PHP_INT_MAX, Arithmetic::addNonNegative(PHP_INT_MAX - 1, 1));
+        self::assertThrows(ObjectRefusal::class, static fn() => Arithmetic::addNonNegative(PHP_INT_MAX, 1));
     }
 }

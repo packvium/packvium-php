@@ -7,6 +7,7 @@ use Packvium\Constraint\LoadCalculator;
 use Packvium\Domain\{AxisAlignedBox, Compression, Container, Dimensions, HullShape, Item, Nesting, Placement, Point, Rotation, ShapeType};
 use ReflectionMethod;
 use Packvium\Serialization\ArrayCodec;
+use Packvium\Serialization\InvalidRequestException;
 use Packvium\Unit\{Length, Weight};
 use Packvium\Support\SignedBigInt;
 
@@ -114,6 +115,30 @@ final class IrregularItemsTest extends TestCase
         self::assertSame($before->vertices, $after->vertices);
         self::assertSame($before->faceAxes, $after->faceAxes);
         self::assertSame($before->edgeDirections, $after->edgeDirections);
+    }
+
+    public static function testAMemoisedPairCollidesLikeUnmemoisedShapesThroughPairMemoChurn(): void
+    {
+        // Shapes from `of` opt out of the pair memo, so they are the reference answer. The churn
+        // pushes far more axes than the pair memo holds, so it is cleared and refilled mid-test.
+        $wedge = self::lowerWedge();
+        $pairs = [];
+        foreach ([Rotation::LWH, Rotation::HWL, Rotation::WLH] as $rotation) {
+            $pairs[] = [HullShape::shapeFor($wedge, $rotation), HullShape::of(HullShape::rotate($wedge, $rotation)), HullShape::box(7, 5, 3)];
+        }
+        for ($round = 0; $round < 3; $round++) {
+            foreach ($pairs as [$memoised, $reference, $box]) {
+                foreach ([[0, 0, 0], [3, 2, 1], [6, 0, 0], [-4, 1, 2], [100, 0, 0]] as $offset) {
+                    self::assertSame(HullShape::collide($reference, [0, 0, 0], $reference, $offset), HullShape::collide($memoised, [0, 0, 0], $memoised, $offset));
+                    self::assertSame(HullShape::collide($reference, [0, 0, 0], $box, $offset), HullShape::collide($memoised, [0, 0, 0], $box, $offset));
+                    self::assertSame(HullShape::collide($box, $offset, $reference, [0, 0, 0]), HullShape::collide($box, $offset, $memoised, [0, 0, 0]));
+                }
+            }
+            for ($stretch = 1; $stretch <= 900; $stretch++) {
+                $left = HullShape::shapeFor([[0, 0, 0], [$stretch + $round * 1000, 0, 0], [0, 3, 0], [0, 0, 5], [1, 1, 1]], Rotation::LWH);
+                HullShape::collide($left, [0, 0, 0], $left, [1, 0, 0]);
+            }
+        }
     }
 
     public static function testTheCrushBoundaryIsInclusive(): void
@@ -663,5 +688,68 @@ final class IrregularItemsTest extends TestCase
             self::assertSame($case['face_axes'], $shape->faceAxes);
             self::assertSame($case['edge_directions'], $shape->edgeDirections);
         }
+    }
+
+    public static function testAHullOfThirtyTwoVerticesIsAdmittedAndThirtyThreeIsRefusedBeforeAnyHullWork(): void
+    {
+        $prism = self::sixteenGonPrism();
+        self::assertSame(32, count($prism));
+        // A long fuse: building a 32-vertex shape is the slowest admitted case, and the default
+        // one-second limit would let a loaded machine decide whether the prism is packed.
+        $request = static function (array $vertices): array {
+            $wire = self::wireRequest([self::wireItem('big', 'convex_hull', $vertices)]);
+            $wire['configuration']['time_limit_ms'] = 60000;
+            return $wire;
+        };
+        $result = ArrayCodec::pack($request($prism));
+        self::assertSame([], $result['unpacked_items'] ?? []);
+
+        // The 33rd vertex repeats one: were the cap not first, the uniqueness rule would answer.
+        $over = $request(array_merge($prism, [$prism[0]]));
+        try {
+            ArrayCodec::pack($over);
+            self::assertTrue(false, 'a 33-vertex hull must be refused');
+        } catch (InvalidRequestException $error) {
+            self::assertSame('above_maximum', $error->reason());
+            self::assertSame('/items/0/hull_vertices', $error->field());
+            self::assertSame('must have at most 32 vertices', $error->detail());
+        }
+
+        $objectPrism = array_map(static fn(array $v): array => [$v[0] * 16000, $v[1] * 16000, $v[2] * 16000], self::sixteenGonPrismPoints());
+        self::assertSame(32, count(self::item(ShapeType::CONVEX_HULL, $objectPrism)->hullVertices ?? []));
+        self::assertRefused('hull_vertices must have at most 32 vertices',
+            fn() => self::item(ShapeType::CONVEX_HULL, array_merge($objectPrism, [$objectPrism[0]])));
+    }
+
+    /** @return list<array{x:string,y:string,z:string}> */
+    private static function sixteenGonPrism(): array
+    {
+        return self::wireVertices(array_map(
+            static fn(array $v): array => [$v[0] * 16000, $v[1] * 16000, $v[2] * 16000],
+            self::sixteenGonPrismPoints(),
+        ));
+    }
+
+    /** @return list<array{int,int,int}> sixteen convex-position points at two heights; 32 vertices in all */
+    private static function sixteenGonPrismPoints(): array
+    {
+        // Every primitive edge vector with its opposite, in angle order, closes into a convex polygon.
+        $edges = [[1, 0], [2, 1], [1, 1], [1, 2], [0, 1], [-1, 2], [-1, 1], [-2, 1],
+                  [-1, 0], [-2, -1], [-1, -1], [-1, -2], [0, -1], [1, -2], [1, -1], [2, -1]];
+        $points = [];
+        $x = 0;
+        $y = 0;
+        foreach ($edges as [$dx, $dy]) {
+            $points[] = [$x + 5, $y + 5];
+            $x += $dx;
+            $y += $dy;
+        }
+        $prism = [];
+        foreach ([0, 10] as $z) {
+            foreach ($points as [$px, $py]) {
+                $prism[] = [$px, $py, $z];
+            }
+        }
+        return $prism;
     }
 }

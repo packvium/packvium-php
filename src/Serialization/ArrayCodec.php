@@ -5,7 +5,7 @@ use ArithmeticError;
 use InvalidArgumentException;
 use Packvium\Algorithm\EffortBudget;
 use Packvium\Config\{PackingConfig,SolverProfile};
-use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedPlacement,Item,MadeToMeasure,Obstacle,OverhangLimit,Point,RateTable,Rotation,ShapeType};
+use Packvium\Domain\{Axle,AxisAlignedBox,Compression,Container,Dimensions,FixedPlacement,HullShape,Item,MadeToMeasure,Obstacle,OverhangLimit,Point,RateTable,Rotation,ShapeType};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Packer;
 use Packvium\Policy\PolicyRuleSet;
@@ -17,7 +17,9 @@ use TypeError;
 use ValueError;
 final class ArrayCodec
 {
-    private static function effortBudget(?array $r):?EffortBudget{if($r===null)return null;return new EffortBudget($r['max_candidates_evaluated']??null,$r['max_placement_attempts']??null,$r['max_search_nodes']??null,$r['max_restarts']??null);}
+    // Each limit by value, as admission read it: `1000.0` is the integer 1000 (JavaScript cannot tell them apart).
+    private static function effortBudget(?array $r):?EffortBudget{if($r===null)return null;$limit=static fn(string $name):?int=>isset($r[$name])?\Packvium\Support\JsonValue::integer($r[$name]):null;
+        return new EffortBudget($limit('max_candidates_evaluated'),$limit('max_placement_attempts'),$limit('max_search_nodes'),$limit('max_restarts'));}
     /** @return array{0:Axle,1:Axle}|null */
     private static function axles(?array $r,string $unit):?array{if($r===null)return null;[$front,$rear]=$r;return [new Axle(Length::parse($front['position'],$unit),isset($front['max_load'])?Weight::parse($front['max_load']):null),new Axle(Length::parse($rear['position'],$unit),isset($rear['max_load'])?Weight::parse($rear['max_load']):null)];}
     /**
@@ -344,6 +346,7 @@ final class ArrayCodec
     private static function hullVertices(?array $raw,string $unit):?array
     {
         if($raw===null)return null;
+        HullShape::admitVertexCount(count($raw));
         $out=[];
         foreach($raw as $vertex)$out[]=[
             Length::parse($vertex['x'],$unit)->ticks,
@@ -375,9 +378,9 @@ final class ArrayCodec
      * @param array<string,mixed> $r
      */
     private static function fixedPlacement(array $r,string $unit):FixedPlacement{return new FixedPlacement($r['item_type'],$r['container_type'],self::point($r['position']??[],$unit),Rotation::from($r['orientation']),array_key_exists('container_instance',$r)?(int)JsonValue::integer($r['container_instance']):1,$r['placement_id']??null);}
-    private static function container(array $r,string $unit):Container{$obs=[];foreach($r['obstacles']??[] as $o){$additional=array_map(fn($b)=>self::box($b,$unit),$o['additional_boxes']??[]);$obs[]=new Obstacle((string)$o['id'],self::box($o,$unit),$additional);}return new Container((string)$r['id'],Dimensions::fromArray($r['inner_dimensions'],$unit),isset($r['outer_dimensions'])?Dimensions::fromArray($r['outer_dimensions'],$unit):null,Weight::parse($r['tare_weight']??0),isset($r['max_payload'])?Weight::parse($r['max_payload']):null,(int)($r['cost_minor']??0),isset($r['quantity'])?(int)$r['quantity']:null,$obs,$r['tags']??[],isset($r['max_items'])?(int)$r['max_items']:null,$r['metadata']??[],(float)($r['void_fill_reserve_ratio']??0),array_map(static fn($v)=>(int)$v,$r['tag_limits']??[]),isset($r['max_stack_density'])?Weight::parse($r['max_stack_density']):null,self::axles($r['axles']??null,$unit),self::rateTable($r['rate_table']??null),array_map(static fn($d)=>(string)$d,$r['access_directions']??[]),[],isset($r['deformable_boundary'])?(string)$r['deformable_boundary']['kind']:null,self::madeToMeasure($r['made_to_measure']??null,$unit),self::palletOverhangLimit($r['pallet_overhang_limit']??null,$unit),null,self::sideGussetDepth($r['deformable_boundary']??null,$unit));}
+    private static function container(array $r,string $unit):Container{$obs=[];foreach($r['obstacles']??[] as $o){$additional=array_map(fn($b)=>self::box($b,$unit),$o['additional_boxes']??[]);$obs[]=new Obstacle((string)$o['id'],self::box($o,$unit),$additional);}return new Container((string)$r['id'],Dimensions::fromArray($r['inner_dimensions'],$unit),isset($r['outer_dimensions'])?Dimensions::fromArray($r['outer_dimensions'],$unit):null,Weight::parse($r['tare_weight']??0),isset($r['max_payload'])?Weight::parse($r['max_payload']):null,(int)($r['cost_minor']??0),isset($r['quantity'])?(int)$r['quantity']:null,$obs,$r['tags']??[],isset($r['max_items'])?(int)$r['max_items']:null,$r['metadata']??[],(float)($r['void_fill_reserve_ratio']??0),array_map(static fn($v)=>(int)$v,(array)($r['tag_limits']??[])),isset($r['max_stack_density'])?Weight::parse($r['max_stack_density']):null,self::axles($r['axles']??null,$unit),self::rateTable($r['rate_table']??null),array_map(static fn($d)=>(string)$d,$r['access_directions']??[]),[],isset($r['deformable_boundary'])?(string)$r['deformable_boundary']['kind']:null,self::madeToMeasure($r['made_to_measure']??null,$unit),self::palletOverhangLimit($r['pallet_overhang_limit']??null,$unit),null,self::gussetDepth($r['deformable_boundary']??null,'side_gusset_depth',$unit),self::gussetDepth($r['deformable_boundary']??null,'bottom_gusset_depth',$unit),(string)($r['deformable_boundary']['orientation']??'flat'));}
     /** @param array<string,mixed>|null $r */
-    private static function sideGussetDepth(?array $r,string $unit):?Length{return ($r['side_gusset_depth']??null)===null?null:new Length(MeasureReading::ticks($r['side_gusset_depth'],Length::class,$unit));}
+    private static function gussetDepth(?array $r,string $name,string $unit):?Length{return ($r[$name]??null)===null?null:new Length(MeasureReading::ticks($r[$name],Length::class,$unit));}
     /** @param array<string,mixed>|null $r */
     private static function palletOverhangLimit(?array $r,string $unit):?OverhangLimit{return $r===null?null:new OverhangLimit(new Length(MeasureReading::ticks($r['length'],Length::class,$unit)),new Length(MeasureReading::ticks($r['width'],Length::class,$unit)));}
     /** @param array<string,mixed>|null $r */
