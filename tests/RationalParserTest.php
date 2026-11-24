@@ -5,7 +5,7 @@ namespace Packvium\Tests;
 
 use InvalidArgumentException;
 use Packvium\Support\RationalParser;
-use Packvium\Unit\Rounding;
+use Packvium\Unit\{Length,Rounding,Weight};
 
 /**
  * The text-to-rational front door.
@@ -102,6 +102,27 @@ final class RationalParserTest extends TestCase
             static fn() => RationalParser::parse('-99999999999999999999'));
         self::assertThrows(InvalidArgumentException::class,
             static fn() => RationalParser::scaled('99999999999999999999', 1, Rounding::Nearest));
+    }
+
+    public static function testAnOverflowingTextIsScaledExactlyWhateverTheMultipliersSign(): void
+    {
+        self::assertSame(\PHP_INT_MIN, RationalParser::scaled('-9223372036854775808', 1, Rounding::Nearest));
+        self::assertSame(-30_000_000, RationalParser::scaled(
+            '100000000000000000000000000000/10000000000000000000000', -3, Rounding::Nearest));
+        // `abs(PHP_INT_MIN)` is a float; the exact path once leaked a TypeError on it.
+        self::assertSame(\PHP_INT_MIN, RationalParser::scaled('1', \PHP_INT_MIN, Rounding::Nearest));
+        self::assertThrows(InvalidArgumentException::class,
+            static fn() => RationalParser::scaled('5', \PHP_INT_MIN, Rounding::Nearest));
+    }
+
+    public static function testAFractionThatOverflowsAfterCancellingIsScaledByTheWholeMultiplier(): void
+    {
+        // gcd(3e9, 8e9) cancels to 3 and 8, and 3e18 x 8 overflows: the exact path must
+        // still read 1e9 kg, not the cancelled multiplier's 1 g.
+        self::assertSame(8_000_000_000_000_000_000, RationalParser::scaled(
+            '3000000000000000000/3000000000', Weight::TICKS_PER_KG, Rounding::Nearest));
+        self::assertSame(609_600_000, RationalParser::scaled(
+            '1500000000000000000/1000000000000000', Length::TICKS_PER_INCH, Rounding::Nearest));
     }
 
     public static function testScalingRefusesNativeIntegerMinimumCleanly(): void

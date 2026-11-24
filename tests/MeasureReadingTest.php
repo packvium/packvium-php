@@ -35,17 +35,32 @@ final class MeasureReadingTest extends TestCase
 
     public static function testEverySpellingOfAVastLengthIsReadExactly(): void
     {
-        foreach (['100000000000000000000 1/2', '922337203685477.5807', self::VAST . '/3', self::VAST . ' cm', self::VAST . 'ticks'] as $text) {
+        foreach (['100000000000000000000 1/2', '922337203685477.5808', self::VAST . '/3', self::VAST . ' cm', self::VAST . 'ticks'] as $text) {
             self::assertSame(MeasureReading::TOO_LARGE, MeasureReading::verdict($text, Length::class, 'mm'), $text);
         }
         self::assertSame(MeasureReading::TOO_LARGE, MeasureReading::verdict(['value' => self::VAST, 'unit' => 'ticks'], Length::class, 'mm'));
+        // Its numerator fits `int`, but 922337203685477.5807 mm is 1.47e19 ticks; it once read
+        // as readable only because the exact path was handed the cancelled multiplier.
+        self::assertSame(MeasureReading::TOO_LARGE, MeasureReading::verdict('922337203685477.5807', Length::class, 'mm'));
+        self::assertSame(MeasureReading::READABLE, MeasureReading::verdict('562949953421.3119', Length::class, 'mm'));
+    }
+
+    public static function testAVastNumberInAnotherSpellingIsUnreadableNotPastTheCeiling(): void
+    {
+        foreach ([self::VAST . ' furlongs', '1e' . self::VAST] as $text) {
+            self::assertSame(MeasureReading::UNREADABLE, MeasureReading::verdict($text, Length::class, 'mm'), $text);
+        }
     }
 
     public static function testAVanishingFractionIsNotPastTheCeiling(): void
     {
-        foreach (['1/' . self::VAST, '0/' . self::VAST, self::VAST . '/0', '1/' . self::VAST . ' m'] as $text) {
-            self::assertSame(MeasureReading::UNREADABLE, MeasureReading::verdict($text, Length::class, 'mm'), $text);
+        foreach (['1/' . self::VAST, '0/' . self::VAST, '1/' . self::VAST . ' m', '-1/' . self::VAST] as $text) {
+            self::assertSame(MeasureReading::READABLE, MeasureReading::verdict($text, Length::class, 'mm'), $text);
         }
+        self::assertSame(MeasureReading::UNREADABLE, MeasureReading::verdict(self::VAST . '/0', Length::class, 'mm'));
+        // A zero with more fraction digits than the grammar allows is not a measure, as in Python.
+        self::assertSame(MeasureReading::UNREADABLE, MeasureReading::verdict('0.' . \str_repeat('0', 26), Length::class, 'mm'));
+        self::assertSame(MeasureReading::NEGATIVE, MeasureReading::verdict('-' . self::VAST . '/3', Length::class, 'mm'));
     }
 
     public static function testAWholeNumberPastTheLargestExactIntegerIsWholeHoweverItWasDecoded(): void

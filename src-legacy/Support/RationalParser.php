@@ -6,6 +6,9 @@ use Packvium\Support\ObjectRefusal;
 use Packvium\Unit\Rounding;
 final class RationalParser
 {
+    public const ASCII_SPACE = " \t\n\r\x0B\x0C";
+    private const SPACE_CLASS = "[ \\t\\n\\r\\x0B\\x0C]";
+
     /**
      * Split an integer, decimal, fraction (`3/16`) or mixed fraction (`12 3/8`) into a
      * numerator and denominator.
@@ -19,9 +22,9 @@ final class RationalParser
     public static function parse($value): array
     {
         if (is_int($value)) { return [$value, 1]; }
-        $text = trim(str_replace("\u{00A0}", ' ', $value));
+        $text = self::withoutPadding($value);
         $negative = strncmp($text, '-', strlen('-')) === 0;
-        if (preg_match('/^([+-]?\d+)\s+(\d+)\s*\/\s*(\d+)$/', $text, $m)) {
+        if (preg_match('/^([+-]?\d+)' . self::SPACE_CLASS . '+(\d+)' . self::SPACE_CLASS . '*\/' . self::SPACE_CLASS . '*(\d+)\z/', $text, $m)) {
             $whole = self::parseWhole($m[1]); $n = self::parseWhole($m[2]); $d = self::parseWhole($m[3]); self::assertDenominator($d);
             // `abs(PHP_INT_MIN)` is a float that compares equal to PHP_INT_MAX, so it would slip
             // past the range check and fail later as a type error rather than an overflow.
@@ -31,10 +34,10 @@ final class RationalParser
             $magnitude = abs($whole) * $d + $n;
             return [$negative ? -$magnitude : $magnitude, $d];
         }
-        if (preg_match('/^([+-]?\d+)\s*\/\s*(\d+)$/', $text, $m)) {
+        if (preg_match('/^([+-]?\d+)' . self::SPACE_CLASS . '*\/' . self::SPACE_CLASS . '*(\d+)\z/', $text, $m)) {
             $n = self::parseWhole($m[1]); $d = self::parseWhole($m[2]); self::assertDenominator($d); return [$n, $d];
         }
-        if (!preg_match('/^([+-]?)(\d+)(?:\.(\d+))?$/', $text, $m)) { throw new ObjectRefusal('wrong_type', "Invalid decimal or fraction: {$text}"); }
+        if (!preg_match('/^([+-]?)(\d+)(?:\.(\d+))?\z/', $text, $m)) { throw new ObjectRefusal('wrong_type', "Invalid decimal or fraction: {$text}"); }
         $fraction = $m[3] ?? '';
         if ($fraction === '') {
             $num = self::parseWhole($m[2]);
@@ -51,19 +54,48 @@ final class RationalParser
     }
 
     /**
+     * The text with ASCII whitespace trimmed, then a no-break space read as a space, in
+     * Python's order: U+00A0 may separate a mixed fraction's parts but is never padding.
+     */
+    public static function withoutPadding(string $value): string
+    {
+        return str_replace("\u{00A0}", ' ', trim($value, self::ASCII_SPACE));
+    }
+
+    /**
      * @param int|string $value
      */
     public static function scaled($value, int $multiplier, string $rounding): int
     {
-        [$n, $d] = self::parse($value);
-        if ($n === PHP_INT_MIN || $multiplier === PHP_INT_MIN) { throw new InvalidArgumentException('Scaled unit value exceeds integer range'); }
+        try {
+            [$n, $d] = self::parse($value);
+        } catch (InvalidArgumentException $error) {
+            if (\is_string($value) && strpos($error->getMessage(), 'exceeds integer range') !== false) {
+                return \Packvium\Support\Internal\MeasureOverflow::scaled($value, $multiplier, $rounding);
+            }
+            throw $error;
+        }
+        if ($n === PHP_INT_MIN || $multiplier === PHP_INT_MIN) {
+            if (\is_string($value)) {
+                return \Packvium\Support\Internal\MeasureOverflow::scaled($value, $multiplier, $rounding);
+            }
+            throw new InvalidArgumentException('Scaled unit value exceeds integer range');
+        }
         // Cancel the denominator against the multiplier before multiplying. A value like
         // "1.123456789012345678" mm would otherwise overflow on n * 16000 even though the
         // exact result is a small integer number of ticks.
         $common = self::gcd($d, abs($multiplier));
-        if ($common > 1) { $d = intdiv($d, $common); $multiplier = intdiv($multiplier, $common); }
-        if ($n !== 0 && abs($n) > intdiv(PHP_INT_MAX, max(1, abs($multiplier)))) { throw new InvalidArgumentException('Scaled unit value exceeds integer range'); }
-        return self::round($n * $multiplier, $d, $rounding);
+        $reduced = $common > 1 ? intdiv($multiplier, $common) : $multiplier;
+        if ($common > 1) { $d = intdiv($d, $common); }
+        if ($n !== 0 && abs($n) > intdiv(PHP_INT_MAX, max(1, abs($reduced)))) {
+            if (\is_string($value)) {
+                // The exact path re-reads the text with its own denominator, so it takes the
+                // multiplier as given, not the one cancelled against that denominator here.
+                return \Packvium\Support\Internal\MeasureOverflow::scaled($value, $multiplier, $rounding);
+            }
+            throw new InvalidArgumentException('Scaled unit value exceeds integer range');
+        }
+        return self::round($n * $reduced, $d, $rounding);
     }
 
     /**

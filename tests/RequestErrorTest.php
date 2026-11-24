@@ -195,6 +195,7 @@ final class RequestErrorTest extends TestCase
     {
         foreach ([[9007199254740991, 0, 0], [4503599627370495, 0, 1000], [1, 9007199254740991, 0]] as [$price, $minimum, $permille]) {
             $request = self::request();
+            $request['containers'][0]['quantity'] = 1;
             $request['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000], 'prices_minor' => [$price],
                 'minimum_charge_minor' => $minimum, 'fuel_surcharge_permille' => $permille];
             RequestRules::check($request);

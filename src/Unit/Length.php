@@ -12,11 +12,15 @@ final readonly class Length
     { return self::read(RationalParser::scaled($value,self::multiplier($unit),$rounding)); }
     public static function mm(int|string $value,Rounding $rounding=Rounding::Nearest):self{return self::of($value,'mm',$rounding);}
     public static function inches(int|string $value,Rounding $rounding=Rounding::Nearest):self{return self::of($value,'in',$rounding);}
-    public static function parse(self|int|string|array $value,string $defaultUnit='mm',Rounding $rounding=Rounding::Nearest):self
+    public static function parse(self|int|float|string|array $value,string $defaultUnit='mm',Rounding $rounding=Rounding::Nearest):self
     {
         if($value instanceof self)return $value;
+        if(is_float($value)){
+            if(!is_finite($value)||floor($value)!==$value||abs($value)>PHP_INT_MAX)throw new ObjectRefusal('wrong_type','Float length input is intentionally rejected; use a decimal string');
+            $value=(int)$value;
+        }
         if(is_array($value))return self::of((string)$value['value'],(string)($value['unit']??$defaultUnit),$rounding);
-        if(is_string($value)&&preg_match('/^(.+?)\s*(mm|cm|m|in|inch|inches|ft|ticks?)$/i',trim($value),$m))return self::of(trim($m[1]),$m[2],$rounding);
+        if(is_string($value)&&preg_match('/^(.+?)[ \t\n\r\x0B\x0C]*(mm|cm|m|in|inch|inches|ft|ticks?)\z/i',trim($value,RationalParser::ASCII_SPACE),$m))return self::of(trim($m[1],RationalParser::ASCII_SPACE),$m[2],$rounding);
         return self::of($value,$defaultUnit,$rounding);
     }
     /** Exact decimal string. Float division loses digits once ticks exceed 2^53. */
@@ -24,7 +28,7 @@ final readonly class Length
     { return RationalParser::decimalString($this->ticks,self::multiplier($unit),$places); }
     /** @return array{ticks:int,value:string,unit:string} */
     public function toArray(string $unit='mm'):array{return ['ticks'=>$this->ticks,'value'=>$this->decimal($unit),'unit'=>$unit];}
-    public static function multiplier(string $unit):int{return match(strtolower(trim($unit))){'tick','ticks'=>1,'mm','millimeter','millimeters'=>self::TICKS_PER_MM,'cm'=>self::TICKS_PER_MM*10,'m'=>self::TICKS_PER_MM*1000,'in','inch','inches'=>self::TICKS_PER_INCH,'ft'=>self::TICKS_PER_INCH*12,default=>throw new ObjectRefusal('invalid_unit',"Unsupported length unit: {$unit}")};}
+    public static function multiplier(string $unit):int{return match(strtolower(trim($unit,RationalParser::ASCII_SPACE))){'tick','ticks'=>1,'mm','millimeter','millimeters'=>self::TICKS_PER_MM,'cm'=>self::TICKS_PER_MM*10,'m'=>self::TICKS_PER_MM*1000,'in','inch','inches'=>self::TICKS_PER_INCH,'ft'=>self::TICKS_PER_INCH*12,default=>throw new ObjectRefusal('invalid_unit',"Unsupported length unit: {$unit}")};}
     /** A length read from the caller's input; the constructor still guards the arithmetic, where a negative is a defect, not a caller's mistake. */
     private static function read(int $ticks):self{if($ticks<0)throw new ObjectRefusal('negative_measure','Length cannot be negative');return new self($ticks);}
 }

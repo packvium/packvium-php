@@ -2,6 +2,8 @@
 declare(strict_types=1);
 namespace Packvium\Sequence;
 
+use Packvium\Sequence\Internal\RemovalSearch;
+
 use Packvium\Constraint\ContactGraph;
 use Packvium\Domain\AxisAlignedBox;
 use Packvium\Domain\Dimensions;
@@ -83,30 +85,17 @@ final class UnloadingDependencyGraph
     public static function safeRemovalOrder(array $boxes, Dimensions $container, array $directions = self::ALL_DIRECTIONS): array
     {
         SequenceGeometry::validated($directions);
-        $graph = self::build($boxes);
-        $dependsOn = $graph->dependsOn();
-        $present = array_fill_keys(array_keys($boxes), true);
+        $search = new RemovalSearch($boxes, $container, $directions);
         $order = [];
-        while ($present !== []) {
-            $chosen = null;
-            foreach (array_keys($present) as $index) {
-                $blockedBySupport = false;
-                foreach (array_keys($dependsOn[$index] ?? []) as $dependency) {
-                    if (isset($present[$dependency])) { $blockedBySupport = true; break; }
-                }
-                if ($blockedBySupport) { continue; }
-                if (SequenceGeometry::clearDirection($index, $boxes[$index], $boxes, $present, $container, $directions) !== null) {
-                    $chosen = $index;
-                    break;
-                }
-            }
-            if ($chosen === null) {
-                throw new SequenceError(array_keys($present));
-            }
+        while ($search->present() !== []) {
             // Deterministic: the lowest index among this step's candidates, not
             // arbitrary array iteration order.
+            $chosen = $search->nextRemovable(array_keys($boxes));
+            if ($chosen === null) {
+                throw new SequenceError(array_keys($search->present()));
+            }
             $order[] = $chosen;
-            unset($present[$chosen]);
+            $search->remove($chosen);
         }
         self::replayRemovalOrder($boxes, $container, $order, $directions);
         return $order;
@@ -141,9 +130,7 @@ final class UnloadingDependencyGraph
     public static function safeRouteRemovalOrder(array $boxes, array $stops, Dimensions $container, array $directions = self::ALL_DIRECTIONS): array
     {
         SequenceGeometry::validated($directions);
-        $graph = self::build($boxes);
-        $dependsOn = $graph->dependsOn();
-        $remaining = array_fill_keys(array_keys($boxes), true);
+        $search = new RemovalSearch($boxes, $container, $directions);
         $order = [];
         $stopValues = [];
         foreach ($stops as $stop) {
@@ -153,29 +140,18 @@ final class UnloadingDependencyGraph
         sort($sortedStops);
         foreach ($sortedStops as $stop) {
             $due = [];
-            foreach (array_keys($remaining) as $index) {
+            foreach (array_keys($search->present()) as $index) {
                 if ($stops[$index] === $stop) { $due[$index] = true; }
             }
             while ($due !== []) {
-                $chosen = null;
-                foreach (array_keys($due) as $index) {
-                    $blockedBySupport = false;
-                    foreach (array_keys($dependsOn[$index] ?? []) as $dependency) {
-                        if (isset($remaining[$dependency])) { $blockedBySupport = true; break; }
-                    }
-                    if ($blockedBySupport) { continue; }
-                    if (SequenceGeometry::clearDirection($index, $boxes[$index], $boxes, $remaining, $container, $directions) !== null) {
-                        $chosen = $index;
-                        break;
-                    }
-                }
+                // Deterministic: the lowest index among this step's candidates, not
+                // arbitrary array iteration order.
+                $chosen = $search->nextRemovable(array_keys($due));
                 if ($chosen === null) {
                     throw new RouteSequenceError($stop, array_keys($due));
                 }
-                // Deterministic: the lowest index among this step's candidates, not
-                // arbitrary array iteration order.
                 $order[] = $chosen;
-                unset($remaining[$chosen]);
+                $search->remove($chosen);
                 unset($due[$chosen]);
             }
         }

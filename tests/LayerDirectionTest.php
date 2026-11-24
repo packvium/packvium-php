@@ -70,6 +70,7 @@ final class LayerDirectionTest extends TestCase
         'Commerce is a leaf by design but reuses Support helpers (R-01)' => [
             'Commerce/Rating/AccessorialCharge.php' => ['Support\\Arithmetic'],
             'Commerce/Rating/CarrierRegistry.php' => ['Support\\Arithmetic', 'Support\\CanonicalJson', 'Support\\ExactInteger'],
+            'Commerce/Shape.php' => ['Support\\CanonicalJson'],
         ],
         'The refusal types hang off Serialization\\InvalidRequestException, so Support and Validation import up to it (R-01)' => [
             'Support/ObjectRefusal.php' => ['Serialization\\InvalidRequestException'],

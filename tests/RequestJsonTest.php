@@ -23,12 +23,40 @@ final class RequestJsonTest extends TestCase
 
     public static function testAJsonArrayIsStillRefusedAsNotAnObject(): void
     {
+        foreach (['[1]', '[]'] as $tagLimits) {
+            try {
+                ArrayCodec::pack(RequestJson::decode(self::request($tagLimits)));
+                self::assertTrue(false, "a list ({$tagLimits}) is not a tag_limits object");
+            } catch (InvalidRequestException $error) {
+                self::assertSame('wrong_type', $error->reason(), $tagLimits);
+                self::assertSame('/containers/0/tag_limits', $error->field(), $tagLimits);
+            }
+        }
+    }
+
+    public static function testAMalformedRateTableOrHullVertexObjectIsRefusedCleanly(): void
+    {
+        $request = RequestJson::decode(self::request('{}'));
+        $request['containers'][0]['rate_table'] = ['weight_brackets_g' => [1000]];
+        self::assertThrows(InvalidRequestException::class, static fn() => ArrayCodec::pack($request));
+
+        $scalars = RequestJson::decode(self::request('{}'));
+        $scalars['items'][0] += ['shape_type' => 'convex_hull', 'hull_vertices' => [7, 7, 7, 7]];
+        self::assertThrows(InvalidRequestException::class, static fn() => ArrayCodec::pack($scalars));
+
+        $hull = RequestJson::decode(
+            '{"items":[{"id":"cube","quantity":1,"weight":"10","shape_type":"convex_hull",'
+            . '"hull_vertices":{"0":{"x":"0","y":"0","z":"0"}},'
+            . '"dimensions":{"length":"100","width":"100","height":"100"}}],'
+            . '"containers":[{"id":"box","quantity":1,"inner_dimensions":{"length":"300","width":"100","height":"100"}}],'
+            . '"configuration":{"solver_profile":"fast"}}'
+        );
         try {
-            ArrayCodec::pack(RequestJson::decode(self::request('[1]')));
-            self::assertTrue(false, 'a list is not a tag_limits object');
+            ArrayCodec::pack($hull);
+            self::assertTrue(false, 'an object keyed from 0 is not a hull_vertices list');
         } catch (InvalidRequestException $error) {
             self::assertSame('wrong_type', $error->reason());
-            self::assertSame('/containers/0/tag_limits', $error->field());
+            self::assertSame('/items/0/hull_vertices', $error->field());
         }
     }
 

@@ -143,9 +143,10 @@ final class CommerceTest extends TestCase
 
     public static function testABaseChargeAboveTheCeilingIsRefused(): void
     {
-        // Past 2^53 - 1 but inside PHP_INT_MAX: PHP used to answer it.
+        // Past 2^53 - 1 but inside PHP_INT_MAX: PHP used to answer it. An input past the ceiling is
+        // refused at its path, as every engine does.
         self::assertQuoteRefusedWith(
-            'quote amount 9007199254740992 is above 9007199254740991 and cannot be represented exactly',
+            'document.tariffs[0].versions[0].minimum_charge_minor: expected an exact integer',
             self::tariffDocument(minimumCharge: 9007199254740992),
             self::shipment(['actual_weight_g' => 1, 'volume_mm3' => 1]),
         );

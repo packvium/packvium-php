@@ -356,16 +356,21 @@ final class ArrayCodec
      *
      * @return list<array{int,int,int}>|null
      */
-    private static function hullVertices(?array $raw,string $unit):?array
+    private static function hullVertices($raw,string $unit):?array
     {
         if($raw===null)return null;
+        if(!is_array($raw))throw new InvalidArgumentException('hull_vertices must be a list of vertex objects');
         HullShape::admitVertexCount(count($raw));
         $out=[];
-        foreach($raw as $vertex)$out[]=[
-            Length::parse($vertex['x'],$unit)->ticks,
-            Length::parse($vertex['y'],$unit)->ticks,
-            Length::parse($vertex['z'],$unit)->ticks,
-        ];
+        foreach($raw as $vertex){
+            if(!is_array($vertex)||!isset($vertex['x'],$vertex['y'],$vertex['z']))
+                throw new InvalidArgumentException('each hull vertex must be an object with x, y and z');
+            $out[]=[
+                Length::parse($vertex['x'],$unit)->ticks,
+                Length::parse($vertex['y'],$unit)->ticks,
+                Length::parse($vertex['z'],$unit)->ticks,
+            ];
+        }
         return $out;
     }
     private static function point(array $r,string $unit):Point{return new Point(Length::parse($r['x']??0,$unit)->ticks,Length::parse($r['y']??0,$unit)->ticks,Length::parse($r['z']??0,$unit)->ticks);}
@@ -417,5 +422,5 @@ final class ArrayCodec
         $tare=$r['tare_per_square_metre']??null;
         return new MadeToMeasure($sides($r['minimum']??null),$sides($r['increment']??null),(int)($r['cost_per_square_metre_minor']??0),$tare===null?0:MeasureReading::ticks($tare,Weight::class,'g'),$sides($r['outer_allowance']??null));
     }
-    private static function rateTable(?array $r):?RateTable{if($r===null)return null;return new RateTable(array_map('intval',$r['weight_brackets_g']),array_map('intval',$r['prices_minor']),(int)($r['minimum_charge_minor']??0),(int)($r['fuel_surcharge_permille']??0),$r['currency']??null);}
+    private static function rateTable($r):?RateTable{if($r===null)return null;if(!is_array($r)||!isset($r['weight_brackets_g'],$r['prices_minor'])||!is_array($r['weight_brackets_g'])||!is_array($r['prices_minor']))throw new InvalidArgumentException('rate_table requires non-empty weight_brackets_g and prices_minor');return new RateTable(array_map('intval',$r['weight_brackets_g']),array_map('intval',$r['prices_minor']),(int)($r['minimum_charge_minor']??0),(int)($r['fuel_surcharge_permille']??0),$r['currency']??null);}
 }

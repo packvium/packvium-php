@@ -458,13 +458,14 @@ final class Stacking
                     $due[$index] = true;
                 }
             }
+            $exits = self::exitBlockers($due, $entries, $present, $container, $directions);
             while ($due !== []) {
                 $chosen = null;
                 foreach (\array_keys($due) as $item) {
                     if (\array_intersect_key($directAbove[$item], $present) !== []) {
                         continue;
                     }
-                    if (self::hasClearExit($item, $entries, $present, $container, $directions)
+                    if (self::hasClearExit($exits[$item])
                         && ($chosen === null || Json::compare($entries[$item]->id, $entries[$chosen]->id) < 0)) {
                         $chosen = $item;
                     }
@@ -477,27 +478,62 @@ final class Stacking
                     return;
                 }
                 unset($present[$chosen], $due[$chosen]);
+                self::lowerExitBlockers($exits, $entries[$chosen]->envelope, $due);
             }
         }
     }
 
-    /** @param list<Entry> $entries @param array<int,true> $present @param array<int,int|string> $container @param list<string> $directions */
-    private static function hasClearExit(int $item, array $entries, array $present, array $container, array $directions): bool
+    /**
+     * How many present items stand in each exit of every item due at this stop (A-08),
+     * as Rust's `ExitBlockers`. Taking an item out lowers the counts it was part of instead of
+     * re-testing every due item against every present one; an exit that is clear stays clear, so
+     * each verdict is the one a fresh sweep would give. `O(|due| * n * d)` once per stop, then
+     * `O(|due| * d)` per removal: `O(n^2 * d)` over a route, where re-testing cost `O(n^3 * d)`.
+     *
+     * @param array<int,true> $due @param list<Entry> $entries @param array<int,true> $present
+     * @param array<int,int|string> $container @param list<string> $directions
+     * @return array<int,list<array{0:Cuboid,1:int}>>
+     */
+    private static function exitBlockers(array $due, array $entries, array $present, array $container, array $directions): array
     {
-        foreach ($directions as $direction) {
-            $region = self::sweptRegion($entries[$item]->envelope, $container, $direction);
-            $blocked = false;
-            foreach (\array_keys($present) as $other) {
-                if ($other !== $item && $region->intersects($entries[$other]->envelope)) {
-                    $blocked = true;
-                    break;
+        $exits = [];
+        foreach (\array_keys($due) as $item) {
+            $exits[$item] = [];
+            foreach ($directions as $direction) {
+                $region = self::sweptRegion($entries[$item]->envelope, $container, $direction);
+                $blockers = 0;
+                foreach (\array_keys($present) as $other) {
+                    if ($other !== $item && $region->intersects($entries[$other]->envelope)) {
+                        $blockers++;
+                    }
                 }
+                $exits[$item][] = [$region, $blockers];
             }
-            if (!$blocked) {
+        }
+        return $exits;
+    }
+
+    /** @param list<array{0:Cuboid,1:int}> $exits */
+    private static function hasClearExit(array $exits): bool
+    {
+        foreach ($exits as $exit) {
+            if ($exit[1] === 0) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** `$removed` left the container: every exit of `$due` it stood in is one blocker lighter. @param array<int,list<array{0:Cuboid,1:int}>> $exits @param array<int,true> $due */
+    private static function lowerExitBlockers(array &$exits, Cuboid $removed, array $due): void
+    {
+        foreach (\array_keys($due) as $item) {
+            foreach ($exits[$item] as $direction => $exit) {
+                if ($exit[0]->intersects($removed)) {
+                    $exits[$item][$direction][1]--;
+                }
+            }
+        }
     }
 
     /** @param array<int,int|string> $container */

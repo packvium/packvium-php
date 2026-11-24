@@ -72,11 +72,36 @@ final class RequestObjects
             \array_map(static fn(Item $item): array => [$item->weight->ticks, $item->quantity], $items),
             \array_map(static fn(Container $container): int => $container->tareWeight->ticks, $containers),
         );
+        RequestRules::totalMoneyMinor(
+            \array_sum(\array_map(static fn(Item $item): int => $item->quantity, $items)),
+            \array_map([self::class, 'containerMoney'], $containers),
+        );
         $hullTypes = \array_values(\array_map(static fn(Item $item): string => $item->id,
             \array_filter($items, static fn(Item $item): bool => $item->shapeType === ShapeType::CONVEX_HULL)));
         foreach ($fixedPlacements as $index => $placement) {
             self::fixedPlacement($placement, "fixed_placements[{$index}]", "/fixed_placements/{$index}", $hullTypes);
         }
+    }
+
+    /** @return array{0:?int,1:string,2:string} */
+    private static function containerMoney(Container $container): array
+    {
+        $cost = $container->madeToMeasure === null
+            ? (string) $container->costMinor
+            : MadeToMeasure::boxCostFor(
+                $container->madeToMeasure->costPerSquareMetreMinor,
+                $container->costMinor,
+                self::sides($container->innerDimensions),
+            );
+        $table = $container->rateTable;
+        $landed = $table === null
+            ? '0'
+            : RequestRules::topBracketLandedMinor(
+                $table->pricesMinor,
+                $table->minimumChargeMinor,
+                $table->fuelSurchargePermille,
+            );
+        return [$container->quantity, $cost, $landed];
     }
 
     /**

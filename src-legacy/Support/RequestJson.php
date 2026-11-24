@@ -24,39 +24,64 @@ final class RequestJson
     public static function decode(string $json)
     {
         $data = \json_decode($json, true, self::DEPTH, \JSON_THROW_ON_ERROR);
-        $ambiguous = self::ambiguousContainers($data);
-        if ($ambiguous === []) {
+        [$ambiguousContainers, $ambiguousItems] = self::ambiguousPaths($data);
+        if ($ambiguousContainers === [] && $ambiguousItems === []) {
             return $data;
         }
         $objects = \json_decode($json, false, self::DEPTH, \JSON_THROW_ON_ERROR);
-        foreach ($ambiguous as $index) {
+        foreach ($ambiguousContainers as $index) {
             $limits = $objects->containers[$index]->tag_limits ?? null;
             if ($limits instanceof stdClass) {
-                $data['containers'][$index]['tag_limits'] = $limits;
+                // An empty `{}` already decodes to the empty map `[]`; only keyed-from-0 objects need keeping.
+                if ($data['containers'][$index]['tag_limits'] !== []) {
+                    $data['containers'][$index]['tag_limits'] = $limits;
+                }
+            } elseif (\is_array($limits) && $limits === []) {
+                // `tag_limits: []` in JSON is a list, not `{}`; mark it so `objectAt` refuses it.
+                $data['containers'][$index]['tag_limits'] = [0 => null];
+            }
+        }
+        foreach ($ambiguousItems as $index) {
+            $vertices = $objects->items[$index]->hull_vertices ?? null;
+            if ($vertices instanceof stdClass) {
+                $data['items'][$index]['hull_vertices'] = $vertices;
             }
         }
         return $data;
     }
 
     /**
-     * Containers whose `tag_limits` decoded as a non-empty list: an array, or an object keyed 0..n-1.
+     * Containers whose `tag_limits` decoded as an empty or non-empty list, and items whose
+     * `hull_vertices` decoded as a list (which could be an object `{"0": ...}`).
      *
      * @param mixed $data
-     * @return list<int>
+     * @return array{0:list<int>,1:list<int>}
      */
-    private static function ambiguousContainers($data): array
+    private static function ambiguousPaths($data): array
     {
-        $containers = \is_array($data) ? ($data['containers'] ?? null) : null;
-        if (!\is_array($containers) || !JsonValue::isList($containers)) {
-            return [];
+        if (!\is_array($data)) {
+            return [[], []];
         }
-        $found = [];
-        foreach ($containers as $index => $container) {
-            $limits = \is_array($container) ? ($container['tag_limits'] ?? null) : null;
-            if (\is_array($limits) && $limits !== [] && JsonValue::isList($limits)) {
-                $found[] = $index;
+        $containerIndices = [];
+        $containers = $data['containers'] ?? null;
+        if (\is_array($containers) && JsonValue::isList($containers)) {
+            foreach ($containers as $index => $container) {
+                $limits = \is_array($container) ? ($container['tag_limits'] ?? null) : null;
+                if (\is_array($limits) && JsonValue::isList($limits)) {
+                    $containerIndices[] = $index;
+                }
             }
         }
-        return $found;
+        $itemIndices = [];
+        $items = $data['items'] ?? null;
+        if (\is_array($items) && JsonValue::isList($items)) {
+            foreach ($items as $index => $item) {
+                $vertices = \is_array($item) ? ($item['hull_vertices'] ?? null) : null;
+                if (\is_array($vertices) && JsonValue::isList($vertices)) {
+                    $itemIndices[] = $index;
+                }
+            }
+        }
+        return [$containerIndices, $itemIndices];
     }
 }
