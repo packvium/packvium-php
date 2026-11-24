@@ -102,7 +102,6 @@ final class RequestObjectsCorpusTest extends TestCase
         'container-gusseted-bag-bottom-gusset-depth-boolean' => self::TYPED,
         'container-flat-bag-orientation' => '`bagOrientation` defaults to flat, so a flat bag that names it '
             . 'cannot be told apart from one that does not',
-        'item-side-fraction' => self::TYPED,
         'item-stacking-group-number' => self::TYPED,
         'fixed-position-unparsable' => 'a Point holds integer ticks, not text',
         'fixed-placement-id-not-a-string' => self::TYPED,
@@ -206,10 +205,12 @@ final class RequestObjectsCorpusTest extends TestCase
         'container.max_payload=2^53 as a number' => self::JSON_NUMBER,
         'container.max_stack_density=2^53 as a number' => self::JSON_NUMBER,
         'container.made_to_measure.tare_per_square_metre=2^53 as a number' => self::JSON_NUMBER,
+        'item-weight-json-number-beyond-i64' => self::JSON_NUMBER,
+        'item-length-json-number-1e21' => self::JSON_NUMBER,
     ];
 
     /** Pinned, so the skip set cannot grow without this line changing too. */
-    private const SKIPPED = 153;
+    private const SKIPPED = 154;
 
     public static function testTheSkipSetIsPinnedAndNamesOnlyCorpusCases(): void
     {

@@ -80,6 +80,12 @@ final class RequestObjects
                 return $container->tareWeight->ticks;
             }, $containers),
         );
+        RequestRules::totalMoneyMinor(
+            \array_sum(\array_map(static function (Item $item): int {
+                return $item->quantity;
+            }, $items)),
+            \array_map([self::class, 'containerMoney'], $containers),
+        );
         $hullTypes = \array_values(\array_map(static function (Item $item): string {
             return $item->id;
         },
@@ -89,6 +95,27 @@ final class RequestObjects
         foreach ($fixedPlacements as $index => $placement) {
             self::fixedPlacement($placement, "fixed_placements[{$index}]", "/fixed_placements/{$index}", $hullTypes);
         }
+    }
+
+    /** @return array{0:?int,1:string,2:string} */
+    private static function containerMoney(Container $container): array
+    {
+        $cost = $container->madeToMeasure === null
+            ? (string) $container->costMinor
+            : MadeToMeasure::boxCostFor(
+                $container->madeToMeasure->costPerSquareMetreMinor,
+                $container->costMinor,
+                self::sides($container->innerDimensions),
+            );
+        $table = $container->rateTable;
+        $landed = $table === null
+            ? '0'
+            : RequestRules::topBracketLandedMinor(
+                $table->pricesMinor,
+                $table->minimumChargeMinor,
+                $table->fuelSurchargePermille,
+            );
+        return [$container->quantity, $cost, $landed];
     }
 
     /**

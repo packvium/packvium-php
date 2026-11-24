@@ -97,6 +97,75 @@ final class RequestRules
             static fn($item): array => [self::weightOf($item, 'weight'), (int) (JsonValue::get($item, 'quantity') ?? 1)],
             $items,
         ), \array_map(static fn($container): int => self::weightOf($container, 'tare_weight'), $containers));
+        self::totalMoney($items, $containers, $unit);
+    }
+
+    /**
+     * M3: the most money the containers `$itemCount` items can open could sum to in a packing
+     * score, against `MAX_EXACT_MAGNITUDE` -- container cost first, then the landed charge. Each
+     * container is `[quantity or null, dearest cost_minor string, dearest landed charge string]`.
+     * Shared with `RequestObjects`. O(c log c) for c containers.
+     *
+     * @param list<array{0:?int,1:string,2:string}> $containers
+     */
+    public static function totalMoneyMinor(int $itemCount, array $containers): void
+    {
+        foreach ([1 => 'must cost', 2 => 'must bill'] as $position => $message) {
+            $ordered = $containers;
+            \usort($ordered, static fn(array $left, array $right): int => BigInt::compare($right[$position], $left[$position]));
+            $remaining = $itemCount;
+            $total = '0';
+            foreach ($ordered as $entry) {
+                if ($remaining <= 0) {
+                    break;
+                }
+                $quantity = $entry[0];
+                $opened = $quantity === null ? $remaining : \min($quantity, $remaining);
+                $total = BigInt::add($total, BigInt::multiply((string) $opened, $entry[$position]));
+                $remaining -= $opened;
+            }
+            if (BigInt::compare($total, CanonicalJson::MAX_EXACT_MAGNITUDE) > 0) {
+                throw self::refuse('above_maximum', '/containers', "{$message} at most "
+                    . CanonicalJson::MAX_EXACT_MAGNITUDE
+                    . ' minor units in all across the containers the items can open');
+            }
+        }
+    }
+
+    /**
+     * @param list<mixed> $items
+     * @param list<mixed> $containers
+     */
+    private static function totalMoney(array $items, array $containers, string $unit): void
+    {
+        $itemCount = 0;
+        foreach ($items as $item) {
+            $itemCount += (int) (JsonValue::get($item, 'quantity') ?? 1);
+        }
+        $stock = [];
+        foreach ($containers as $container) {
+            $fee = (int) (JsonValue::get($container, 'cost_minor') ?? 0);
+            $machine = JsonValue::get($container, 'made_to_measure');
+            $cost = $machine === null
+                ? (string) $fee
+                : MadeToMeasure::boxCostFor(
+                    (int) (JsonValue::get($machine, 'cost_per_square_metre_minor') ?? 0),
+                    $fee,
+                    self::sideTicks(JsonValue::get($container, 'inner_dimensions'), $unit),
+                );
+            $table = JsonValue::get($container, 'rate_table');
+            $prices = $table === null ? null : JsonValue::get($table, 'prices_minor');
+            $landed = !\is_array($prices) || $prices === []
+                ? '0'
+                : self::topBracketLandedMinor(
+                    \array_map('intval', $prices),
+                    (int) (JsonValue::get($table, 'minimum_charge_minor') ?? 0),
+                    (int) (JsonValue::get($table, 'fuel_surcharge_permille') ?? 0),
+                );
+            $quantity = JsonValue::get($container, 'quantity');
+            $stock[] = [$quantity === null ? null : (int) $quantity, $cost, $landed];
+        }
+        self::totalMoneyMinor($itemCount, $stock);
     }
 
     /**
@@ -582,17 +651,27 @@ final class RequestRules
      *
      * @param list<int> $prices every field already passed its own check
      */
-    public static function rateTableCeiling(array $prices, int $minimumCharge, int $fuelSurchargePermille, string $where): void
+    /**
+     * The most one container on this table can be billed, fuel surcharge included; `'0'` for a
+     * table with no prices. Shared with `RequestObjects`. O(p) for p prices.
+     *
+     * @param list<int> $prices
+     */
+    public static function topBracketLandedMinor(array $prices, int $minimumCharge, int $fuelSurchargePermille): string
     {
         if ($prices === []) {
-            return;
+            return '0';
         }
         $base = (string) \max(\max($prices), $minimumCharge);
         $product = BigInt::multiply($base, (string) $fuelSurchargePermille);
         $quotient = BigInt::divide($product, '1000');
         $exact = BigInt::compare(BigInt::multiply($quotient, '1000'), $product) === 0;
-        $landed = BigInt::add($base, $exact ? $quotient : BigInt::add($quotient, '1'));
-        if (BigInt::compare($landed, CanonicalJson::MAX_EXACT_MAGNITUDE) > 0) {
+        return BigInt::add($base, $exact ? $quotient : BigInt::add($quotient, '1'));
+    }
+
+    public static function rateTableCeiling(array $prices, int $minimumCharge, int $fuelSurchargePermille, string $where): void
+    {
+        if (BigInt::compare(self::topBracketLandedMinor($prices, $minimumCharge, $fuelSurchargePermille), CanonicalJson::MAX_EXACT_MAGNITUDE) > 0) {
             throw self::refuse('above_maximum', $where, 'must price its top bracket at most '
                 . CanonicalJson::MAX_EXACT_MAGNITUDE . ' minor units with the fuel surcharge');
         }
@@ -655,7 +734,7 @@ final class RequestRules
     {
         $length = $kind === Length::class;
         $scalar = \is_int($value) || \is_string($value)
-            || (\is_float($value) && (JsonValue::integer($value) !== null || ($length && MeasureReading::isWholeBeyondExact($value))));
+            || (\is_float($value) && (JsonValue::integer($value) !== null || MeasureReading::isWholeBeyondExact($value)));
         if (!$scalar && !self::isMeasureObject($value)) {
             throw self::refuse('wrong_type', $field, 'must be a measure');
         }

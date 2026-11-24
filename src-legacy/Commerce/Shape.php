@@ -4,6 +4,7 @@ namespace Packvium\Commerce;
 
 use Packvium\Commerce\Catalog\CatalogException;
 use Packvium\Commerce\Policy\PolicyException;
+use Packvium\Support\CanonicalJson;
 
 /**
  * Shape validation for the commerce document and its requests.
@@ -77,7 +78,8 @@ final class Shape
     public static function integer($value, string $path): int
     {
         // A JSON boolean where an exact integer belongs is a caller mistake, not a 0 or 1.
-        if (!is_int($value) || is_bool($value)) { self::fail($path, 'expected an exact integer'); }
+        // Past 2^53 - 1 JavaScript has already rounded the JSON number.
+        if (!is_int($value) || is_bool($value) || abs($value) > CanonicalJson::MAX_EXACT_MAGNITUDE) { self::fail($path, 'expected an exact integer'); }
         return $value;
     }
 

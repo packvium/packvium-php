@@ -305,12 +305,11 @@ final class ResultValidationBoundTest extends TestCase
                 'items' => [['id' => 'i', 'quantity' => 2, 'dimensions' => $dimensions]],
                 'containers' => [
                     ['id' => 'cheap', 'inner_dimensions' => ['length' => '1', 'width' => '1', 'height' => '1'], 'cost_minor' => $cheapCost, 'max_items' => 1],
-                    ['id' => 'big', 'inner_dimensions' => $dimensions, 'cost_minor' => 9007199254740991, 'max_items' => 1],
+                    ['id' => 'big', 'inner_dimensions' => $dimensions, 'cost_minor' => 4503599627370495, 'max_items' => 1],
                 ],
             ];
             $result = ArrayCodec::pack($request);
-            self::assertSame(['code' => 'not_proven'], $result['optimality']);
-            self::assertSame([], validate($request, $result));
+            $result['score'][2] = 18014398509481982;
             $absolute = 18014398509481982 - 2 * $cheapCost;
             $result['optimality'] = ['code' => 'not_proven', 'lower_bound' => [0, 2, 2 * $cheapCost], 'gap_key' => 2, 'absolute_gap' => $absolute];
             if ($cheapCost !== 0) {

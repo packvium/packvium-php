@@ -140,4 +140,12 @@ final class UnitTest extends TestCase
         self::assertSame(['ticks' => 406_400, 'value' => '25.4', 'unit' => 'mm'], Length::inches(1)->toArray('mm'));
         self::assertSame(['ticks' => 8_000_000_000, 'value' => '1000', 'unit' => 'g'], Weight::of(1, 'kg')->toArray('g'));
     }
+
+    public static function testIntegralFloatsAreAcceptedByParse(): void
+    {
+        self::assertSame(1_600_000, Length::parse(100.0)->ticks);
+        self::assertSame(800_000_000, Weight::parse(100.0)->ticks);
+        self::assertSame(1_600_000, Length::parse(['value' => 100.0, 'unit' => 'mm'])->ticks);
+        self::assertSame(800_000_000, Weight::parse(['value' => 100.0, 'unit' => 'g'])->ticks);
+    }
 }

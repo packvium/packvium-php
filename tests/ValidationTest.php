@@ -880,4 +880,25 @@ final class ValidationTest extends TestCase
         }
         self::assertTrue($named, 'the report must name both sides of a collision');
     }
+
+    public static function testTheResultValidatorUnloadsARowThroughOneDoorNearestFirst(): void
+    {
+        // Three crates due at one stop, in a row toward the only door. Each comes out
+        // only once the one nearer the door has, which is the blocker count each removal
+        // lowers -- and the answer must still validate.
+        $crate = static function (string $id): array {
+            return ['id' => $id, 'quantity' => 1, 'stop_index' => 0, 'allowed_rotations' => ['LWH'],
+                'dimensions' => ['length' => '100', 'width' => '100', 'height' => '100']];
+        };
+        $request = [
+            'configuration' => ['solver_profile' => 'fast', 'effort_budget' => ['max_candidates_evaluated' => 100000,
+                'max_placement_attempts' => 100000, 'max_search_nodes' => 100000]],
+            'items' => [$crate('a'), $crate('b'), $crate('c')],
+            'containers' => [['id' => 'van', 'access_directions' => ['+x'],
+                'inner_dimensions' => ['length' => '300', 'width' => '100', 'height' => '100']]],
+        ];
+        $result = json_decode((string) json_encode(\Packvium\Serialization\ArrayCodec::pack($request)), true);
+        self::assertCount(3, $result['containers'][0]['placements']);
+        self::assertSame([], \Packvium\Support\ResultValidation\Validator::validate($request, $result));
+    }
 }

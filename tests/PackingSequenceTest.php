@@ -1129,4 +1129,86 @@ final class PackingSequenceTest extends TestCase
             }
         }
     }
+
+    // ------------------------------------------- the removal search counts blockers
+
+    /**
+     * The search before: restart at the lowest index after every removal and test each
+     * box again. Kept as the oracle the counted search must equal, as Rust keeps its own.
+     *
+     * @param list<AxisAlignedBox> $boxes @param list<string> $directions @return list<int>|string
+     */
+    private static function rescanningRemovalOrder(array $boxes, Dimensions $container, array $directions)
+    {
+        $dependsOn = UnloadingDependencyGraph::build($boxes)->dependsOn();
+        $present = array_fill_keys(array_keys($boxes), true);
+        $order = [];
+        while ($present !== []) {
+            $chosen = null;
+            foreach (array_keys($present) as $index) {
+                if (array_intersect_key($dependsOn[$index], $present) !== []) {
+                    continue;
+                }
+                if (\Packvium\Sequence\SequenceGeometry::clearDirection($index, $boxes[$index], $boxes, $present, $container, $directions) !== null) {
+                    $chosen = $index;
+                    break;
+                }
+            }
+            if ($chosen === null) {
+                return 'stuck ' . implode(',', array_keys($present));
+            }
+            $order[] = $chosen;
+            unset($present[$chosen]);
+        }
+        try {
+            UnloadingDependencyGraph::replayRemovalOrder($boxes, $container, $order, $directions);
+        } catch (SequenceReplayError $error) {
+            return 'replay ' . $error->getMessage();
+        }
+        return $order;
+    }
+
+    /** @param list<AxisAlignedBox> $boxes @param list<string> $directions @return list<int>|string */
+    private static function countedRemovalOrder(array $boxes, Dimensions $container, array $directions)
+    {
+        try {
+            return UnloadingDependencyGraph::safeRemovalOrder($boxes, $container, $directions);
+        } catch (SequenceError $error) {
+            return 'stuck ' . implode(',', $error->stuck);
+        } catch (SequenceReplayError $error) {
+            return 'replay ' . $error->getMessage();
+        }
+    }
+
+    public static function testTheCountedRemovalSearchAnswersWhatRescanningWouldOnMixedScenes(): void
+    {
+        $state = 0x2545F491;
+        $next = static function (int $bound) use (&$state): int {
+            $state = ($state * 1103515245 + 12345) & 0x7FFFFFFF;
+            return intdiv($state, 65536) % $bound;
+        };
+        $directionSets = [['+x'], ['+x', '+y'], ['-z', '+x'], UnloadingDependencyGraph::ALL_DIRECTIONS, []];
+        $container = Dimensions::mm(60, 50, 40);
+        for ($round = 0; $round < 400; $round++) {
+            $boxes = [];
+            for ($count = 1 + $next(14); $count > 0; $count--) {
+                $boxes[] = self::box($next(5) * 10, $next(4) * 10, $next(3) * 10, 10 * (1 + $next(2)), 10 * (1 + $next(2)), 10);
+            }
+            $directions = $directionSets[$round % count($directionSets)];
+            self::assertSame(
+                self::rescanningRemovalOrder($boxes, $container, $directions),
+                self::countedRemovalOrder($boxes, $container, $directions),
+                "round {$round}"
+            );
+        }
+    }
+
+    public static function testARowBlockedAllTheWayBackUnloadsNearestTheDoorFirst(): void
+    {
+        $boxes = [];
+        for ($index = 0; $index < 60; $index++) {
+            $boxes[] = self::box($index * 10, 0, 0, 10, 10, 10);
+        }
+        self::assertSame(range(59, 0), UnloadingDependencyGraph::safeRemovalOrder($boxes, Dimensions::mm(600, 10, 10), ['+x']));
+    }
 }

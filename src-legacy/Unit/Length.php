@@ -28,13 +28,17 @@ final class Length
      */
     public static function inches($value,string $rounding=Rounding::Nearest):self{return self::of($value,'in',$rounding);}
     /**
-     * @param $this|int|string|mixed[] $value
+     * @param $this|int|float|string|mixed[] $value
      */
     public static function parse($value,string $defaultUnit='mm',string $rounding=Rounding::Nearest):self
     {
         if($value instanceof self)return $value;
+        if(is_float($value)){
+            if(!is_finite($value)||floor($value)!==$value||abs($value)>PHP_INT_MAX)throw new ObjectRefusal('wrong_type','Float length input is intentionally rejected; use a decimal string');
+            $value=(int)$value;
+        }
         if(is_array($value))return self::of((string)$value['value'],(string)($value['unit']??$defaultUnit),$rounding);
-        if(is_string($value)&&preg_match('/^(.+?)\s*(mm|cm|m|in|inch|inches|ft|ticks?)$/i',trim($value),$m))return self::of(trim($m[1]),$m[2],$rounding);
+        if(is_string($value)&&preg_match('/^(.+?)[ \t\n\r\x0B\x0C]*(mm|cm|m|in|inch|inches|ft|ticks?)\z/i',trim($value,RationalParser::ASCII_SPACE),$m))return self::of(trim($m[1],RationalParser::ASCII_SPACE),$m[2],$rounding);
         return self::of($value,$defaultUnit,$rounding);
     }
     /** Exact decimal string. Float division loses digits once ticks exceed 2^53. */
@@ -42,7 +46,7 @@ final class Length
     { return RationalParser::decimalString($this->ticks,self::multiplier($unit),$places); }
     /** @return array{ticks:int,value:string,unit:string} */
     public function toArray(string $unit='mm'):array{return ['ticks'=>$this->ticks,'value'=>$this->decimal($unit),'unit'=>$unit];}
-    public static function multiplier(string $unit):int{switch (strtolower(trim($unit))) {
+    public static function multiplier(string $unit):int{switch (strtolower(trim($unit,RationalParser::ASCII_SPACE))) {
         case 'tick':
         case 'ticks':
             return 1;

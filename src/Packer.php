@@ -6,7 +6,7 @@ namespace Packvium;
 use Packvium\Algorithm\{Deadline, FixedLoad, FixedPlacementAdmission, ObjectiveBoundScope, ObjectiveBounds, SolverOrchestrator};
 use Packvium\Support\{RequestObjects, StableSorter, UnsupportedPlacements};
 use Packvium\Config\PackingConfig;
-use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, PalletOverhang, UnratedWeightException};
+use Packvium\Domain\{Container, FixedPlacement, Item, PackingRequest, PalletOverhang, UnpackedItem, UnratedWeightException};
 use Packvium\Extension\ExtensionRegistry;
 use Packvium\Objective\{LandedCostSolutionScorer, ObjectiveRegistry, SolutionScorer, UnknownObjectiveException};
 use Packvium\Result\{
@@ -93,6 +93,23 @@ final class Packer
      *
      * @param list<Item> $items @param list<Container> $containers @param list<FixedPlacement> $fixedPlacements
      */
+    /**
+     * `$unpacked` in the order the request listed the items, each item's instances by number
+     *. Every engine reports this order, whichever search left the items out and in
+     * whichever order it gave up on them. O(u log u) for u unpacked instances.
+     *
+     * @param list<UnpackedItem> $unpacked
+     * @param array<array-key, int> $requestOrder
+     * @return list<UnpackedItem>
+     */
+    private static function inRequestOrder(array $unpacked, array $requestOrder): array
+    {
+        return StableSorter::sortBy($unpacked, static fn(UnpackedItem $entry): array => [
+            $requestOrder[$entry->instance->item->id],
+            $entry->instance->sequence,
+        ]);
+    }
+
     private function solve(array $items, array $containers, array $fixedPlacements, ?string $currency = null): PackingResult
     {
         // A pallet with an overhang limit is packed as its widened frame from here on, and a
@@ -155,6 +172,10 @@ final class Packer
             $deadline,
             $fixed->containers,
         );
+        $requestOrder = [];
+        foreach (array_values($items) as $index => $item) {
+            $requestOrder[$item->id] = $index;
+        }
         $ranked = [];
         $validator = new IndependentSolutionValidator();
         $scorer = $this->solutionScorer ?? ObjectiveRegistry::resolve($this->config->objective, $this->config);
@@ -216,7 +237,7 @@ final class Packer
             $ranked[] = new PackingResult(
                 $status,
                 $raw->containers,
-                $raw->unpacked,
+                self::inRequestOrder($raw->unpacked, $requestOrder),
                 new AlgorithmReport(
                     $this->config->profile->value,
                     $raw->solverName,

@@ -4,6 +4,31 @@ What changed in `packvium/packvium` on Packagist, release by release. The format
 [Keep a Changelog](https://keepachangelog.com/1.1.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0]
+
+The money ceiling covers sums, the measure grammar is finished, and the array path checks its
+shapes.
+
+### Changed
+
+- **A request whose dearest openable containers cost more than 9007199254740991 minor units in
+  all,** or whose landed top brackets bill more than that in all, is refused at `/containers`.
+- **A commerce input integer outside ±(2^53 − 1)** is refused at its path with `expected an
+  exact integer`. 1.11 read it up to `PHP_INT_MAX`.
+- **U+00A0 as padding or before a unit** (`"\u00a0100"`, `"100\u00a0mm"`) is `wrong_type`. It
+  still separates a mixed fraction's parts. A long decimal or fraction that overflows `int` is
+  read exactly instead of refused.
+- **`Length::parse()` and `Weight::parse()` accept `float`,** admitting finite integer-valued
+  floats in range. Pass a fractional value as a decimal string.
+- **The array path refuses `tag_limits: []`, an associative `hull_vertices` and a missing
+  `prices_minor`** with a request error, not a PHP warning.
+- **`unpacked_items` is listed in request order, then by instance number.**
+
+### Performance
+
+- **`UnloadingDependencyGraph::safeRemovalOrder()`, route removal and their validation run in
+  O(n² · d).**
+
 ## [1.11.0]
 
 Bottom gussets and standing pouches, a certified bound for the shipping objectives, one money
